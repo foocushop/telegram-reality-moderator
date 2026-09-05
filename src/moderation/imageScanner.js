@@ -44,9 +44,16 @@ export class ImageScanner {
     console.log('───────────────────────────────────────────────────────────────────');
 
     try {
-      // 1. Récupérer le fichier auprès de Telegram
+      // 1. Récupérer le fichier auprès de Telegram (résolution intermédiaire ~320px pour diviser les tokens par 5)
       console.log(`[SCANNER IMAGE] 📥 1/3 Récupération de l'URL auprès de Telegram...`);
-      const file = await ctx.getFile();
+      let file = null;
+      if (photos && photos.length > 1 && ctx.api && typeof ctx.api.getFile === 'function') {
+        const targetPhoto = photos[1];
+        file = await ctx.api.getFile(targetPhoto.file_id).catch(() => null);
+      }
+      if (!file) {
+        file = await ctx.getFile();
+      }
       if (!file.file_path) {
         console.warn('[SCANNER IMAGE] ⚠️ Impossible de récupérer le file_path Telegram.');
         console.log('═══════════════════════════════════════════════════════════════════\n');

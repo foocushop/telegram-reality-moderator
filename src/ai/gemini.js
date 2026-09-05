@@ -326,35 +326,41 @@ class AIService {
     if (this.provider === 'groq') {
       const candidateModels = [
         config.groqTextModel || 'qwen/qwen3.8-27b',
-        'qwen/qwen3.8-27b',
-        'qwen/qwen3.6-27b'
+        'openai/gpt-oss-120b',
+        'openai/gpt-oss-20b'
       ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
       for (const model of candidateModels) {
         try {
+          const payload = {
+            model,
+            max_tokens: 300,
+            messages: [
+              { role: 'system', content: INTERVENTION_EVALUATION_SYSTEM_INSTRUCTION },
+              { role: 'user', content: prompt }
+            ],
+            response_format: { type: 'json_object' }
+          };
+          if (model.startsWith('openai/')) {
+            payload.reasoning_format = 'hidden';
+          }
+
           const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${config.groqApiKey}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              model,
-              max_tokens: 250,
-              messages: [
-                { role: 'system', content: INTERVENTION_EVALUATION_SYSTEM_INSTRUCTION },
-                { role: 'user', content: prompt }
-              ],
-              response_format: { type: 'json_object' }
-            })
+            body: JSON.stringify(payload)
           });
 
           if (!res.ok) continue;
 
           const data = await res.json();
           let content = data.choices?.[0]?.message?.content || '{}';
-          content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-          const cleanJson = content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
+          content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          const cleanJson = jsonMatch ? jsonMatch[0] : content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
           const parsed = JSON.parse(cleanJson);
 
           return {
@@ -413,7 +419,7 @@ class AIService {
           },
           body: JSON.stringify({
             model,
-            max_tokens: 600,
+            max_tokens: 1200,
             messages: [
               { role: 'system', content: IMAGE_MODERATION_SYSTEM_INSTRUCTION },
               {
@@ -435,11 +441,13 @@ class AIService {
 
         const data = await res.json();
         let content = data.choices?.[0]?.message?.content || '{}';
-        // Retrait des balises <think> le cas échéant
-        content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
         const jsonMatch = content.match(/\{[\s\S]*\}/);
-        const cleanJson = jsonMatch ? jsonMatch[0] : content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
-        const parsed = JSON.parse(cleanJson);
+        if (!jsonMatch) {
+          console.warn(`[GROQ VISION] Pas de JSON détecté dans la réponse de ${model}`);
+          continue;
+        }
+        const parsed = JSON.parse(jsonMatch[0]);
 
         return {
           isInappropriate: Boolean(parsed.isInappropriate || parsed.isAdultNsfw),
@@ -467,8 +475,8 @@ class AIService {
   async callGroqText(text) {
     const candidateModels = [
       config.groqTextModel || 'qwen/qwen3.8-27b',
-      'qwen/qwen3.8-27b',
-      'qwen/qwen3.6-27b'
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b'
     ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
     for (const model of candidateModels) {
@@ -483,7 +491,7 @@ class AIService {
           response_format: { type: 'json_object' }
         };
         if (model.startsWith('openai/')) {
-          payload.reasoning_effort = 'low';
+          payload.reasoning_format = 'hidden';
         }
 
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -503,8 +511,9 @@ class AIService {
 
         const data = await res.json();
         let content = data.choices?.[0]?.message?.content || '{}';
-        content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        const cleanJson = content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
+        content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const cleanJson = jsonMatch ? jsonMatch[0] : content.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
         const parsed = JSON.parse(cleanJson);
 
         return {
@@ -530,18 +539,19 @@ class AIService {
     const candidateModels = [
       config.groqTextModel || 'qwen/qwen3.8-27b',
       'openai/gpt-oss-120b',
-      'qwen/qwen3.8-27b'
+      'openai/gpt-oss-20b',
+      'groq/compound-mini'
     ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
     for (const model of candidateModels) {
       try {
         const payload = {
           model,
-          max_tokens: 150,
+          max_tokens: 300,
           messages: [{ role: 'user', content: prompt }]
         };
         if (model.startsWith('openai/')) {
-          payload.reasoning_effort = 'low';
+          payload.reasoning_format = 'hidden';
         }
 
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -562,7 +572,7 @@ class AIService {
         const data = await res.json();
         let content = data.choices?.[0]?.message?.content?.trim() || null;
         if (content) {
-          content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
           if (content) return content;
         }
       } catch (err) {
@@ -583,24 +593,29 @@ class AIService {
     if (this.provider === 'groq') {
       const candidateModels = [
         config.groqTextModel || 'qwen/qwen3.8-27b',
-        'qwen/qwen3.8-27b',
         'openai/gpt-oss-120b',
-        'qwen/qwen3.6-27b'
+        'openai/gpt-oss-20b',
+        'groq/compound-mini'
       ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
       for (const model of candidateModels) {
         try {
+          const payload = {
+            model,
+            max_tokens: maxTokens,
+            messages: [{ role: 'user', content: prompt }]
+          };
+          if (model.startsWith('openai/')) {
+            payload.reasoning_format = 'hidden';
+          }
+
           const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${config.groqApiKey}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              model,
-              max_tokens: maxTokens,
-              messages: [{ role: 'user', content: prompt }]
-            })
+            body: JSON.stringify(payload)
           });
 
           if (!res.ok) continue;
@@ -608,7 +623,7 @@ class AIService {
           const data = await res.json();
           let content = data.choices?.[0]?.message?.content?.trim() || null;
           if (content) {
-            content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
             if (content) return content;
           }
         } catch (err) {
@@ -645,9 +660,9 @@ class AIService {
     if (this.provider === 'groq') {
       const candidateModels = [
         config.groqTextModel || 'qwen/qwen3.8-27b',
-        'qwen/qwen3.8-27b',
         'openai/gpt-oss-120b',
-        'qwen/qwen3.6-27b'
+        'openai/gpt-oss-20b',
+        'groq/compound-mini'
       ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
       const messages = [];
@@ -662,17 +677,22 @@ class AIService {
 
       for (const model of candidateModels) {
         try {
+          const payload = {
+            model,
+            max_tokens: maxTokens,
+            messages
+          };
+          if (model.startsWith('openai/')) {
+            payload.reasoning_format = 'hidden';
+          }
+
           const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${config.groqApiKey}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              model,
-              max_tokens: maxTokens,
-              messages
-            })
+            body: JSON.stringify(payload)
           });
 
           if (!res.ok) continue;
@@ -680,7 +700,7 @@ class AIService {
           const data = await res.json();
           let content = data.choices?.[0]?.message?.content?.trim() || null;
           if (content) {
-            content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
             content = sanitizeMimicryIfNeeded(content, allowMimicry);
             if (content) return content;
           }

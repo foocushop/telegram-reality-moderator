@@ -14,8 +14,8 @@ export const config = {
   // Moteur d'IA choisi : 'groq' ou 'gemini' (par défaut : si une clé Groq est présente, utilise Groq)
   aiProvider: (process.env.AI_PROVIDER || (process.env.GROQ_API_KEY ? 'groq' : 'gemini')).toLowerCase(),
 
-  // Modèles Groq recommandés et vérifiés
-  groqTextModel: process.env.GROQ_TEXT_MODEL || 'qwen/qwen3.8-27b',
+  // Modèles Groq recommandés et vérifiés (quotas séparés de 200k TPD chacun)
+  groqTextModel: process.env.GROQ_TEXT_MODEL || 'openai/gpt-oss-120b',
   groqVisionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
 
   // Modèle Gemini utilisé (gemini-3.6-flash est le modèle recommandé le plus récent et gratuit)
