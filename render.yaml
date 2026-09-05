@@ -1,0 +1,27 @@
+﻿services:
+  - type: web
+    name: lena-moderator-bot
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: AI_PROVIDER
+        value: groq
+      - key: GROQ_TEXT_MODEL
+        value: qwen/qwen3.8-27b
+      - key: GROQ_VISION_MODEL
+        value: qwen/qwen3.8-27b
+      - key: MUTE_DURATION_MINUTES
+        value: "15"
+      - key: DELETE_OFFENDING_MESSAGES
+        value: "true"
+      - key: NOTIFY_CHAT_ON_ACTION
+        value: "true"
+      - key: BOT_PERSONALITY_CONTEXT
+        value: "Tu es Léna (Léna Situations, @Lenasituation_bot), animatrice complice et modératrice bienveillante de ce groupe Télé-Réalité. Ambiance solaire, décontractée, positive (+ = +)."
