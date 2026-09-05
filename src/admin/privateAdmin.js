@@ -1,0 +1,1016 @@
+import fs from 'fs';
+import path from 'path';
+import { InlineKeyboard } from 'grammy';
+import { config, getBotContext } from '../config.js';
+import { db } from '../storage/database.js';
+import { ActionManager } from '../moderation/actionManager.js';
+import { escapeHtml } from '../utils/format.js';
+import { geminiService } from '../ai/gemini.js';
+import { conversationSessions } from '../ai/conversationSession.js';
+
+export class PrivateAdminManager {
+  /**
+   * Vérifie si l'utilisateur en chat privé a les droits d'administration
+   */
+  static isAuthorized(userOrId) {
+    if (!userOrId) return false;
+    if (db.isMaster(userOrId)) return true;
+    const userId = typeof userOrId === 'object' ? userOrId.id : userOrId;
+    if (!userId) return false;
+    if (db.isMaster(userId)) return true;
+    if (config.adminUserIds.includes(userId)) return true;
+    if (db.isOwnerOrAdmin(userId)) return true;
+    // Si aucun propriétaire n'a encore été enregistré, le premier utilisateur peut être autorisé
+    if (!db.getOwnerId() && config.adminUserIds.length === 0) return true;
+    return false;
+  }
+
+  /**
+   * Génère le clavier interactif du panneau de contrôle privé
+   */
+  static getMainKeyboard() {
+    const chatsCount = db.getManagedChats().length;
+    return new InlineKeyboard()
+      .text("📊 Statistiques", "p_stats")
+      .text("📝 Contexte / Consignes", "p_context").row()
+      .text("📺 Séries & Liens", "p_shows")
+      .text("💾 Sauvegardes", "p_backup").row()
+      .text(`📡 Canaux & Groupes (${chatsCount})`, "p_channels")
+      .text("📢 Faire une Annonce", "p_broadcast_info").row()
+      .text("🛡️ Sécurité & Filtres", "p_security")
+      .text("👑 Gérer les Maîtres", "p_masters").row()
+      .text("🚫 Liste des Bannis", "p_bans")
+      .text("🔇 Liste des Mutes", "p_mutes").row()
+      .text("🔄 Recharger", "p_reload");
+  }
+
+  /**
+   * Menu principal envoyé en message privé
+   */
+  static async sendDashboard(ctx, isEdit = false) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply(
+        "⛔ <b>Accès restreint</b> : Ce panneau est réservé au propriétaire et aux administrateurs du groupe.\n\n" +
+        "💡 <i>Si vous êtes le propriétaire : écrivez un message ou tapez /admin dans votre groupe pour que le bot associe automatiquement votre compte !</i>",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const isMasterUser = db.isMaster(ctx.from);
+    const masters = db.getMasters();
+    let ownerLabel = "🛡️ Administrateur";
+    if (isMasterUser) {
+      ownerLabel = "👑 MAÎTRE SUPRÊME (Dieu du bot)";
+    } else if (db.getOwnerId() === userId) {
+      ownerLabel = "👑 Propriétaire (Owner)";
+    }
+
+    let masterStatus = "";
+    if (masters.length === 0) {
+      masterStatus = "<i>Aucun maître (tapez /addmaster @pseudo)</i>";
+    } else {
+      masterStatus = masters
+        .map(m => m.username ? `@${escapeHtml(m.username)}` : `ID:${m.id}`)
+        .join(', ');
+    }
+
+    const chats = db.getManagedChats();
+    const channelsCount = db.getManagedChannels().length;
+    const groupsCount = db.getManagedGroups().length;
+    const groupStatus = chats.length > 0
+      ? `${chats.length} destination(s) (${channelsCount} canal/aux, ${groupsCount} groupe(s))`
+      : "En attente d'association (ajoutez le bot admin dans vos canaux)";
+
+    const text =
+      `👑 <b>SALLE DE CONTRÔLE PRIVÉE DU BOT</b>\n\n` +
+      `👤 Votre statut : <b>${ownerLabel}</b>\n` +
+      `⚡ Maître(s) : <b>${masterStatus}</b>\n` +
+      `📺 Destinations gérées : <b>${groupStatus}</b>\n\n` +
+      `Vous pouvez tout piloter et régler ici en privé sans déranger les membres :\n` +
+      `• <b>Gérer les Maîtres</b> (voir, ajouter ou supprimer les Maîtres du bot)\n` +
+      `• Consulter les statistiques et les sanctions\n` +
+      `• Gérer les séries et liens protégés (anti-leak)\n` +
+      `• Modifier les règles et consignes du bot (<code>context.txt</code>)\n` +
+      `• Publier une annonce officielle sur le groupe\n` +
+      `• Régler la sécurité (slowmode, lockdown, filtres)\n` +
+      `• Ou simplement <b>discuter avec moi</b> !\n\n` +
+      `<i>Cliquez sur un bouton ci-dessous ou tapez une commande :</i>`;
+
+    if (isEdit && ctx.callbackQuery) {
+      try {
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: this.getMainKeyboard()
+        });
+        return;
+      } catch (e) {
+        // Ignorer si déjà identique
+      }
+    }
+
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      reply_markup: this.getMainKeyboard()
+    });
+  }
+
+  /**
+   * Gestion des clics sur les boutons inline en privé
+   */
+  static async handleCallback(ctx, action) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.answerCallbackQuery({ text: "Action non autorisée.", show_alert: true });
+    }
+
+    if (action.startsWith('p_delmaster_')) {
+      const target = action.replace('p_delmaster_', '').trim();
+      const removed = db.removeMaster(target);
+      await ctx.answerCallbackQuery({
+        text: removed ? `✅ Maître ${target} retiré avec succès !` : "⚠️ Maître introuvable.",
+        show_alert: true
+      });
+      await this.showMastersMenu(ctx, true);
+      return;
+    }
+
+    if (action.startsWith('p_delchat_')) {
+      const target = action.replace('p_delchat_', '').trim();
+      const removed = db.removeManagedChat(target);
+      await ctx.answerCallbackQuery({
+        text: removed ? `✅ Destination retirée de la liste !` : "⚠️ Destination introuvable.",
+        show_alert: true
+      });
+      await this.sendChannelsList(ctx, true);
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+
+    switch (action) {
+      case 'p_channels': {
+        await this.sendChannelsList(ctx, true);
+        break;
+      }
+
+      case 'p_menu':
+      case 'p_main_menu': {
+        await this.sendDashboard(ctx, true);
+        break;
+      }
+
+      case 'p_stats': {
+        const stats = db.getStats();
+        await ctx.reply(
+          `📊 <b>STATISTIQUES DU GROUPE EN TEMPS RÉEL</b>\n\n` +
+          `💬 Messages analysés : <b>${stats.messagesScanned}</b>\n` +
+          `📸 Images inspectées par l'IA : <b>${stats.imagesScanned}</b>\n` +
+          `🚫 Bannissements totaux : <b>${stats.bansCount}</b>\n` +
+          `⏳ Mutes totaux : <b>${stats.mutesCount}</b>\n` +
+          `🌊 Floods stoppés : <b>${stats.floodIntercepted || 0}</b>\n` +
+          `🔗 Liens / pubs bloqués : <b>${stats.linksBlocked || 0}</b>\n` +
+          `🔒 Bannis actifs en base : <b>${stats.activeBans}</b>\n` +
+          `🔇 Mutes actifs en base : <b>${stats.activeMutes}</b>\n` +
+          `🤖 Moteur IA : <b>${escapeHtml(geminiService.getActiveModelName())}</b>`,
+          { parse_mode: 'HTML' }
+        );
+        break;
+      }
+
+      case 'p_context': {
+        const currentContext = getBotContext();
+        await ctx.reply(
+          `📝 <b>CONTEXTE ET CONSIGNES ACTUELLES DU BOT :</b>\n\n` +
+          `<code>${escapeHtml(currentContext.slice(0, 3000))}</code>\n\n` +
+          `💡 <b>Pour modifier ce texte directement en privé :</b>\n` +
+          `• Tapez : <code>/setcontext [votre nouveau texte complet]</code>\n` +
+          `• Ou tapez : <code>/addcontext [une consigne à ajouter]</code>`,
+          { parse_mode: 'HTML' }
+        );
+        break;
+      }
+
+      case 'p_broadcast_info': {
+        const chats = db.getManagedChats();
+        const channelsCount = db.getManagedChannels().length;
+        const groupsCount = db.getManagedGroups().length;
+        await ctx.reply(
+          `📢 <b>DIFFUSION D'UNE ANNONCE MULTI-CANAUX</b>\n\n` +
+          `Pour envoyer une annonce officielle et soignée dans <b>tous vos canaux et groupes connectés</b> (${chats.length} au total : ${channelsCount} canal/aux, ${groupsCount} groupe(s)), tapez :\n\n` +
+          `<code>/broadcast Votre message d'annonce ici...</code>\n\n` +
+          `<i>Le bot publiera instantanément l'annonce avec un badge officiel Télé-Réalité sur chacun d'eux !</i>\n\n` +
+          `💡 <i>Tapez <code>/channels</code> pour voir et gérer la liste de vos canaux et groupes.</i>`,
+          { parse_mode: 'HTML' }
+        );
+        break;
+      }
+
+      case 'p_security': {
+        await ctx.reply(
+          `🛡️ <b>ÉTAT DES PROTECTIONS DU GROUPE :</b>\n\n` +
+          `• 🌊 <b>Anti-Flood :</b> Actif (max ${config.floodMaxMessages} msgs en ${config.floodWindowSeconds}s)\n` +
+          `• 🔗 <b>Anti-Pub & Liens :</b> Actif (bloque les invitations Telegram externes et scams)\n` +
+          `• 📸 <b>Vision IA NSFW :</b> Active (${config.groqVisionModel})\n` +
+          `• ⚠️ <b>Avertissements Max :</b> ${config.maxWarningsBeforeBan} avertissements avant ban définitif\n\n` +
+          `💡 <b>Commandes de crise disponibles en privé :</b>\n` +
+          `• <code>/slowmode 15</code> : Imposer 15s de délai entre chaque message\n` +
+          `• <code>/slowmode 0</code> : Désactiver le slowmode\n` +
+          `• <code>/lockdown</code> : Couper la parole aux membres en urgence\n` +
+          `• <code>/unlock</code> : Rétablir la parole`,
+          { parse_mode: 'HTML' }
+        );
+        break;
+      }
+
+      case 'p_bans': {
+        const bans = db.getActiveBansList();
+        if (bans.length === 0) {
+          return ctx.reply("✅ Aucun utilisateur banni actuellement dans la base.", { parse_mode: 'HTML' });
+        }
+        let text = `🚫 <b>LISTE DES MEMBRES BANNIS (${bans.length}) :</b>\n\n`;
+        bans.slice(0, 15).forEach((b, i) => {
+          const userStr = b.username && b.username !== 'Inconnu' ? `@${escapeHtml(b.username)}` : `ID:${b.userId}`;
+          text += `${i + 1}. <b>${userStr}</b> — Motif : <i>${escapeHtml(b.reason || 'N/A')}</i>\n`;
+        });
+        text += `\n💡 <i>Pour débannir : tapez <code>/unban @pseudo</code> ou <code>/unban ID</code></i>`;
+        await ctx.reply(text, { parse_mode: 'HTML' });
+        break;
+      }
+
+      case 'p_mutes': {
+        const mutes = db.getActiveMutesList();
+        if (mutes.length === 0) {
+          return ctx.reply("✅ Aucun membre n'est actuellement en sourdine (mute).", { parse_mode: 'HTML' });
+        }
+        let text = `🔇 <b>MEMBRES ACTUELLEMENT EN SOURDINE (${mutes.length}) :</b>\n\n`;
+        mutes.slice(0, 15).forEach((m, i) => {
+          const remainingMin = Math.max(1, Math.round((m.unmuteTimestamp - Date.now()) / 60000));
+          const userStr = m.username && m.username !== 'Inconnu' ? `@${escapeHtml(m.username)}` : `ID:${m.userId}`;
+          text += `${i + 1}. <b>${userStr}</b> — Reste : <b>${remainingMin} min</b> (Motif : <i>${escapeHtml(m.reason || 'N/A')}</i>)\n`;
+        });
+        text += `\n💡 <i>Pour dé-muter : tapez <code>/unmute @pseudo</code> ou <code>/unmute ID</code></i>`;
+        await ctx.reply(text, { parse_mode: 'HTML' });
+        break;
+      }
+
+      case 'p_shows': {
+        await this.listShowsCommand(ctx);
+        break;
+      }
+
+      case 'p_backup': {
+        await this.handleBackup(ctx);
+        break;
+      }
+
+      case 'p_masters':
+      case 'p_master': {
+        await this.showMastersMenu(ctx);
+        break;
+      }
+
+      case 'p_addmaster_me': {
+        db.addMaster(ctx.from);
+        await ctx.answerCallbackQuery({ text: "👑 Vous êtes désormais Maître Suprême !" });
+        await this.showMastersMenu(ctx, true);
+        break;
+      }
+
+      case 'p_main_menu': {
+        await this.sendDashboard(ctx, true);
+        break;
+      }
+
+      case 'p_reload': {
+        const count = ActionManager.adminCache.size;
+        await ctx.reply(
+          `🔄 <b>SYNCHRONISATION EFFECTUÉE !</b>\n\n` +
+          `• <code>context.txt</code> relu avec succès.\n` +
+          `• Cache des administrateurs et base de données à jour.`,
+          { parse_mode: 'HTML' }
+        );
+        break;
+      }
+    }
+  }
+
+  /**
+   * Commande administrateur pour ajouter une série / télé-réalité
+   */
+  static async addShowCommand(ctx, fullArgs) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    if (!fullArgs || !fullArgs.includes('|')) {
+      return ctx.reply(
+        `⚠️ <b>Format d'ajout d'une émission :</b>\n\n` +
+        `<code>/addshow Nom de la série | Lien de visionnage | [Description optionnelle]</code>\n\n` +
+        `💡 <b>Exemples :</b>\n` +
+        `• <code>/addshow La Villa des Cœurs Brisés | https://lien.tv/villa | Saison 9 quotidienne</code>\n` +
+        `• <code>/addshow Secret Story | https://lien.tv/secret | Épisodes et primes</code>\n` +
+        `• <code>/addshow Les Cinquante | https://lien.tv/50</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const parts = fullArgs.split('|').map(p => p.trim());
+    const name = parts[0];
+    const link = parts[1];
+    const description = parts[2] || '';
+
+    if (!name || !link) {
+      return ctx.reply("⚠️ Le nom et le lien sont obligatoires. Séparez-les avec une barre verticale <code>|</code>.", { parse_mode: 'HTML' });
+    }
+
+    const show = db.addShow(name, link, description);
+    if (show) {
+      await ctx.reply(
+        `✅ <b>ÉMISSION AJOUTÉE AU CATALOGUE AVEC SUCCÈS !</b>\n\n` +
+        `📺 <b>Nom :</b> ${escapeHtml(show.name)}\n` +
+        `🔗 <b>Lien :</b> <code>${escapeHtml(show.link)}</code>\n` +
+        (show.description ? `📋 <b>Description :</b> <i>${escapeHtml(show.description)}</i>\n` : '') +
+        `🏷️ <b>Alias reconnus :</b> <i>${escapeHtml(show.aliases.join(', '))}</i>\n\n` +
+        `🛡️ <b>Règle de sécurité :</b> Ce lien ne sera JAMAIS partagé publiquement sur le groupe. Si un membre demande cette émission dans le chat, le bot l'invitera à lui écrire en privé pour recevoir le lien !`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply("❌ Erreur lors de l'enregistrement de l'émission.");
+    }
+  }
+
+  /**
+   * Commande administrateur pour supprimer une série
+   */
+  static async delShowCommand(ctx, nameOrId) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    if (!nameOrId || nameOrId.trim().length === 0) {
+      return ctx.reply("⚠️ Veuillez spécifier le nom ou l'ID de l'émission à retirer : <code>/delshow La Villa</code>", { parse_mode: 'HTML' });
+    }
+
+    const success = db.removeShow(nameOrId.trim());
+    if (success) {
+      await ctx.reply(`✅ L'émission <b>${escapeHtml(nameOrId.trim())}</b> a été retirée du catalogue.`, { parse_mode: 'HTML' });
+    } else {
+      await ctx.reply(`❌ Aucune émission trouvée correspondant à <b>${escapeHtml(nameOrId.trim())}</b>. Tapez /shows pour voir la liste.`, { parse_mode: 'HTML' });
+    }
+  }
+
+  /**
+   * Commande administrateur pour lister toutes les séries enregistrées avec leurs liens
+   */
+  static async listShowsCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const shows = db.getShowsList();
+    if (shows.length === 0) {
+      return ctx.reply(
+        `📺 <b>CATALOGUE ADMINISTRATEUR (0 émission enregistrée)</b>\n\n` +
+        `Vous n'avez pas encore ajouté d'émissions au catalogue.\n\n` +
+        `💡 <b>Pour ajouter une émission :</b>\n` +
+        `<code>/addshow Nom de la série | Lien de visionnage | [Description]</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    let msg = `📺 <b>CATALOGUE ADMINISTRATEUR (${shows.length} émissions) :</b>\n\n`;
+    shows.forEach((s, idx) => {
+      msg += `${idx + 1}. <b>${escapeHtml(s.name)}</b>\n`;
+      msg += `   🔗 <code>${escapeHtml(s.link)}</code>\n`;
+      if (s.description) msg += `   📋 <i>${escapeHtml(s.description)}</i>\n`;
+      msg += `   🆔 ID : <code>${escapeHtml(s.id)}</code>\n\n`;
+    });
+
+    msg += `💡 <b>Actions rapides :</b>\n`;
+    msg += `• Ajouter : <code>/addshow Nom | Lien | Description</code>\n`;
+    msg += `• Supprimer : <code>/delshow Nom ou ID</code>\n`;
+    msg += `• Sauvegarder : <code>/backup</code>`;
+
+    await ctx.reply(msg, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Menu interactif de gestion des Maîtres Suprêmes
+   */
+  static async showMastersMenu(ctx, isEdit = false) {
+    const masters = db.getMasters();
+    const keyboard = new InlineKeyboard();
+
+    let text = `👑 <b>GESTION DES MAÎTRES SUPRÊMES DU BOT</b> ⚡\n\n` +
+      `Le bot accorde à ses <b>Maîtres</b> une obéissance absolue :\n` +
+      `• Il les appelle <i>« Maître »</i> ou <i>« Sa Majesté »</i>.\n` +
+      `• Dans le groupe, ils peuvent bannir ou muter directement en langage naturel sans slash (ex: <i>« Tu peux bannir celui-là »</i>).\n\n` +
+      `📋 <b>Liste des Maîtres actuels (${masters.length}) :</b>\n\n`;
+
+    if (masters.length === 0) {
+      text += `<i>Aucun Maître configuré pour le moment.</i>\n\n`;
+    } else {
+      masters.forEach((m, idx) => {
+        const usernameStr = m.username ? `@${escapeHtml(m.username)}` : '<i>Sans @</i>';
+        const idStr = m.id ? `(ID: <code>${m.id}</code>)` : '<i>(ID non lié)</i>';
+        text += `${idx + 1}. <b>${usernameStr}</b> ${idStr}\n`;
+        const removeKey = m.username ? m.username : m.id;
+        keyboard.text(`🗑️ Retirer ${m.username ? '@' + m.username : 'ID ' + m.id}`, `p_delmaster_${removeKey}`).row();
+      });
+      text += '\n';
+    }
+
+    text += `🛠️ <b>Commandes disponibles :</b>\n` +
+      `• Ajouter : <code>/addmaster @pseudo</code>\n` +
+      `• Vous ajouter : <code>/addmaster me</code>\n` +
+      `• Retirer : <code>/delmaster @pseudo</code> ou <code>/delmaster ID</code>\n` +
+      `• Lister : <code>/masters</code>`;
+
+    const isCurrentMaster = db.isMaster(ctx.from);
+    if (!isCurrentMaster) {
+      keyboard.text("➕ M'ajouter comme Maître", "p_addmaster_me").row();
+    }
+    keyboard.text("🔙 Retour au Menu", "p_main_menu");
+
+    if (isEdit && ctx.callbackQuery) {
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard });
+        return;
+      } catch (e) {
+        // Ignorer si échec d'édition
+      }
+    }
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
+  }
+
+  /**
+   * Commande administrateur pour lister les Maîtres
+   */
+  static async listMastersCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+    return this.showMastersMenu(ctx, false);
+  }
+
+  /**
+   * Ajoute un Maître Suprême (@username ou ID)
+   */
+  static async addMasterCommand(ctx, arg) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const cleanArg = (arg || '').trim();
+    if (!cleanArg) {
+      return ctx.reply(
+        `👑 <b>Ajouter un Maître Suprême :</b>\n\n` +
+        `Usage : <code>/addmaster @pseudo</code> ou <code>/addmaster me</code>\n\n` +
+        `Exemple : <code>/addmaster @gankpai</code>\n` +
+        `Tapez <code>/masters</code> pour voir la liste actuelle.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    let target = cleanArg;
+    if (cleanArg.toLowerCase() === 'me') {
+      if (ctx.from?.username) {
+        target = `@${ctx.from.username}`;
+      } else if (userId) {
+        target = String(userId);
+      }
+    }
+
+    const res = db.addMaster(target);
+    if (res) {
+      const display = res.username ? `@${res.username}` : `ID: ${res.id}`;
+      await ctx.reply(
+        `👑✨ <b>NOUVEAU MAÎTRE ENREGISTRÉ !</b>\n\n` +
+        `Le compte <b>${escapeHtml(display)}</b> est désormais le <b>Maître Suprême</b> du bot !\n\n` +
+        `Désormais :\n` +
+        `• Léna vous appellera <i>« Maître »</i> ou <i>« Sa Majesté »</i>.\n` +
+        `• Dans le groupe ou en répondant à un message, vous pouvez dire : <i>« Tu peux bannir celui-là »</i>, et votre ordre sera exécuté sur-le-champ ! ⚡\n\n` +
+        `Tapez <code>/masters</code> pour voir la liste des maîtres.`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply("❌ Impossible de configurer ce maître. Spécifiez un @pseudo ou un ID valide.", { parse_mode: 'HTML' });
+    }
+  }
+
+  /**
+   * Supprime un Maître Suprême (@username ou ID)
+   */
+  static async delMasterCommand(ctx, arg) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const cleanArg = (arg || '').trim();
+    if (!cleanArg) {
+      return ctx.reply(
+        `🗑️ <b>Retirer un Maître Suprême :</b>\n\n` +
+        `Usage : <code>/delmaster @pseudo</code> ou <code>/delmaster ID</code>\n\n` +
+        `Tapez <code>/masters</code> pour voir la liste des maîtres actifs.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    let target = cleanArg;
+    if (cleanArg.toLowerCase() === 'me') {
+      if (ctx.from?.username) {
+        target = `@${ctx.from.username}`;
+      } else if (userId) {
+        target = String(userId);
+      }
+    }
+
+    const removed = db.removeMaster(target);
+    if (removed) {
+      await ctx.reply(
+        `✅ <b>Maître retiré avec succès !</b>\n\n` +
+        `Le compte <code>${escapeHtml(target)}</code> n'a plus les privilèges de Maître Suprême.\n` +
+        `Tapez <code>/masters</code> pour voir la liste à jour.`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply(
+        `⚠️ Aucun maître correspondant à <code>${escapeHtml(target)}</code> n'a été trouvé.\n` +
+        `Tapez <code>/masters</code> pour vérifier les maîtres existants.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  }
+
+  /**
+   * Définit le Maître Suprême (alias pour addMasterCommand)
+   */
+  static async setMasterCommand(ctx, arg) {
+    return this.addMasterCommand(ctx, arg);
+  }
+
+  /**
+   * Crée un instantané de sauvegarde et affiche les informations de sécurité
+   */
+  static async handleBackup(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const backupRes = db.createBackup("Sauvegarde manuelle administrateur");
+    const shows = db.getShowsList();
+
+    let msg = `💾 <b>SYSTÈME DE SAUVEGARDE & PERSISTANCE ACTIVE</b> 🛡️\n\n`;
+    if (backupRes) {
+      msg += `✅ <b>Nouvelle sauvegarde créée avec succès !</b>\n`;
+      msg += `📁 Fichier d'archive : <code>${escapeHtml(backupRes.filename)}</code>\n`;
+      msg += `📺 Séries sauvegardées : <b>${backupRes.showsCount} émission(s)</b>\n`;
+      msg += `🕒 Date : <code>${new Date(backupRes.timestamp).toLocaleString('fr-FR')}</code>\n\n`;
+    }
+
+    msg += `🔒 <b>Comment vos liens sont protégés en continu :</b>\n`;
+    msg += `1️⃣ <b>Double redondance :</b> Chaque ajout/suppression est écrit simultanément dans <code>moderation_db.json</code> ET dans <code>shows_catalog.json</code>.\n`;
+    msg += `2️⃣ <b>Historique de secours :</b> Le dossier <code>data/backups/</code> conserve les 10 dernières sauvegardes horodatées.\n`;
+    msg += `3️⃣ <b>Restauration automatique :</b> Si le bot redémarre ou subit une mise à jour, il recharge automatiquement vos séries sans perte de données.\n`;
+    msg += `4️⃣ <b>Isolation totale des tests :</b> Les tests de développement utilisent désormais leur propre base séparée et ne touchent JAMAIS à vos vrais liens.\n\n`;
+    msg += `💡 <b>Commandes disponibles :</b>\n`;
+    msg += `• <code>/backup</code> : Déclencher un instantané immédiat\n`;
+    msg += `• <code>/backups</code> : Voir l'historique des sauvegardes\n`;
+    msg += `• <code>/restoreshows</code> : Restaurer les séries depuis la dernière sauvegarde`;
+
+    await ctx.reply(msg, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Affiche l'historique des sauvegardes
+   */
+  static async listBackupsCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const backups = db.listBackups();
+    if (backups.length === 0) {
+      return ctx.reply("📁 Aucune archive de sauvegarde pour le moment. Tapez /backup pour en créer une.", { parse_mode: 'HTML' });
+    }
+
+    let msg = `📁 <b>HISTORIQUE DES SAUVEGARDES (${backups.length}) :</b>\n\n`;
+    backups.slice(0, 10).forEach((b, idx) => {
+      const dateStr = b.timestamp ? new Date(b.timestamp).toLocaleString('fr-FR') : 'Date inconnue';
+      msg += `${idx + 1}. <code>${escapeHtml(b.filename)}</code>\n`;
+      msg += `   📺 ${b.showsCount} émission(s) | Motif : <i>${escapeHtml(b.reason)}</i>\n`;
+      msg += `   🕒 ${dateStr}\n\n`;
+    });
+
+    msg += `💡 Pour restaurer la dernière sauvegarde : tapez <code>/restoreshows</code>`;
+    await ctx.reply(msg, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Restaure les séries depuis le dernier backup ou catalogue miroir
+   */
+  static async restoreShowsCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const restored = db.restoreFromLatestBackup();
+    const shows = db.getShowsList();
+
+    if (restored || shows.length > 0) {
+      await ctx.reply(
+        `✅ <b>RESTAURATION RÉUSSIE !</b>\n\n` +
+        `📺 <b>${shows.length} émission(s)</b> sont actuellement chargées et actives dans votre catalogue.\n` +
+        `Tapez <code>/shows</code> pour vérifier la liste complète.`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply(
+        `⚠️ Aucune sauvegarde précédente n'a pu être trouvée. Tapez <code>/addshow</code> pour ajouter de nouvelles émissions.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  }
+
+  /**
+   * Modifie ou ajoute du texte au fichier context.txt directement depuis Telegram
+   */
+  static async updateContext(ctx, newText, isAppend = false) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès refusé.");
+    }
+
+    if (!newText || newText.trim().length === 0) {
+      return ctx.reply("⚠️ Veuillez spécifier le texte à enregistrer. Exemple : <code>/setcontext Mon nouveau contexte...</code>", { parse_mode: 'HTML' });
+    }
+
+    try {
+      const contextPath = path.resolve('context.txt');
+      let finalContent = newText.trim();
+
+      if (isAppend && fs.existsSync(contextPath)) {
+        const current = fs.readFileSync(contextPath, 'utf-8');
+        finalContent = `${current}\n\n# --- Ajout du ${new Date().toLocaleDateString('fr-FR')} ---\n${finalContent}`;
+      }
+
+      fs.writeFileSync(contextPath, finalContent, 'utf-8');
+
+      await ctx.reply(
+        `✅ <b>CONTEXTE MIS À JOUR AVEC SUCCÈS !</b>\n\n` +
+        `Le bot a immédiatement pris en compte vos nouvelles consignes sans redémarrage.\n\n` +
+        `📄 <b>Aperçu :</b>\n<code>${escapeHtml(finalContent.slice(0, 500))}...</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[PRIVATE ADMIN] Erreur écriture context.txt:', err);
+      await ctx.reply(`❌ Erreur lors de l'écriture du fichier : ${err.message}`);
+    }
+  }
+
+  /**
+   * Envoie une annonce officielle dans TOUS les canaux et groupes Telegram gérés
+   */
+  static async broadcastToAll(ctx, announcementText) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès refusé.");
+    }
+
+    const chats = db.getManagedChats();
+    if (!chats || chats.length === 0) {
+      return ctx.reply(
+        "⚠️ <b>Aucun canal ni groupe n'est encore associé !</b>\n\n" +
+        "Pour associer un canal ou groupe :\n" +
+        "• Ajoutez le bot comme <b>Administrateur</b> dans votre canal / groupe (avec droit de publication)\n" +
+        "• Ou tapez <code>/addchannel @nom_du_canal</code>\n" +
+        "• Ou transférez n'importe quel message de votre canal ici en privé",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    if (!announcementText || announcementText.trim().length === 0) {
+      return ctx.reply(
+        "⚠️ Veuillez écrire le message de l'annonce.\nExemple : <code>/broadcast Ce soir prime à 20h en direct !</code>",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const broadcastMessage =
+      `📢 <b>ANNONCE OFFICIELLE DU CANAL</b> 📺✨\n\n` +
+      `${escapeHtml(announcementText.trim())}\n\n` +
+      `<i>— La Direction & Léna ✨ (+ = +)</i>`;
+
+    const successes = [];
+    const failures = [];
+
+    // Notification temporaire de progression si plusieurs chats
+    let progressMsg = null;
+    if (chats.length > 1) {
+      progressMsg = await ctx.reply(
+        `⏳ <b>Diffusion en cours vers ${chats.length} destination(s)...</b>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => null);
+    }
+
+    for (const chat of chats) {
+      try {
+        await ctx.api.sendMessage(chat.id, broadcastMessage, { parse_mode: 'HTML' });
+        successes.push(chat);
+      } catch (err) {
+        console.error(`[BROADCAST] Erreur envoi vers ${chat.title} (${chat.id}):`, err.message);
+        failures.push({ chat, error: err.message });
+
+        // Si le bot a été expulsé ou si le chat n'existe plus, nettoyer automatiquement
+        const isDeadChat =
+          err.message.includes('chat not found') ||
+          err.message.includes('bot was kicked') ||
+          err.message.includes('bot was blocked') ||
+          err.message.includes('chat was deleted');
+        if (isDeadChat) {
+          console.warn(`[BROADCAST] 🧹 Retrait automatique du chat inactif : ${chat.id} (${chat.title})`);
+          db.removeManagedChat(chat.id);
+        }
+      }
+    }
+
+    if (progressMsg) {
+      await ctx.api.deleteMessage(ctx.chat.id, progressMsg.message_id).catch(() => {});
+    }
+
+    // Rapport détaillé à l'administrateur
+    let report = `📢 <b>RAPPORT DE DIFFUSION</b> 📡\n\n`;
+    report += `Message diffusé avec succès à <b>${successes.length}/${chats.length}</b> destination(s).\n\n`;
+
+    if (successes.length > 0) {
+      report += `✅ <b>Envoyé avec succès à :</b>\n`;
+      successes.forEach(c => {
+        const icon = c.type === 'channel' ? '📢' : '👥';
+        report += `• ${icon} <b>${escapeHtml(c.title || 'Canal')}</b> (ID: <code>${c.id}</code>)\n`;
+      });
+      report += `\n`;
+    }
+
+    if (failures.length > 0) {
+      report += `❌ <b>Échecs (${failures.length}) :</b>\n`;
+      failures.forEach(f => {
+        const icon = f.chat?.type === 'channel' ? '📢' : '👥';
+        report += `• ${icon} <b>${escapeHtml(f.chat?.title || 'Inconnu')}</b> : <i>${escapeHtml(f.error)}</i>\n`;
+      });
+      report += `\n💡 <i>Vérifiez que le bot est bien administrateur avec la permission de poster des messages dans ces canaux/groupes.</i>`;
+    }
+
+    await ctx.reply(report, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Alias de compatibilité pour broadcastToAll
+   */
+  static async broadcastToGroup(ctx, announcementText) {
+    return this.broadcastToAll(ctx, announcementText);
+  }
+
+  /**
+   * Envoie la liste des canaux et groupes gérés avec gestion interactive
+   */
+  static async sendChannelsList(ctx, isEdit = false) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès refusé.");
+    }
+
+    const chats = db.getManagedChats();
+    const keyboard = new InlineKeyboard();
+
+    let text = `📡 <b>CANAUX ET GROUPES GÉRÉS (${chats.length}) :</b>\n\n`;
+    text += `Le bot diffusera toutes les annonces (<code>/broadcast</code>) vers chacune de ces destinations où il est administrateur.\n\n`;
+
+    if (chats.length === 0) {
+      text += `<i>Aucun canal ou groupe n'est enregistré pour le moment.</i>\n\n`;
+    } else {
+      chats.forEach((c, idx) => {
+        const icon = c.type === 'channel' ? '📢' : '👥';
+        const typeLabel = c.type === 'channel' ? 'Canal' : 'Groupe';
+        const userStr = c.username ? ` (@${escapeHtml(c.username)})` : '';
+        text += `${idx + 1}. ${icon} <b>${escapeHtml(c.title || typeLabel)}</b>${userStr}\n`;
+        text += `   • ID : <code>${c.id}</code> | Type : <i>${typeLabel}</i>\n`;
+
+        keyboard.text(`🗑️ Retirer #${idx + 1} (${(c.title || typeLabel).slice(0, 15)})`, `p_delchat_${c.id}`).row();
+      });
+      text += `\n`;
+    }
+
+    text += `➕ <b>COMMENT AJOUTER UN NOUVEAU CANAL OU GROUPE :</b>\n` +
+      `1️⃣ <b>Méthode automatique :</b> Ajoutez le bot comme <b>Administrateur</b> dans votre canal ou groupe (avec le droit de publier des messages). Le bot l'enregistre instantanément !\n` +
+      `2️⃣ <b>Méthode transfert :</b> Transférez n'importe quel message de votre canal directement ici dans cette discussion privée avec le bot.\n` +
+      `3️⃣ <b>Méthode commande :</b> Tapez <code>/addchannel @nom_du_canal</code> ou <code>/addchannel -100xxxxxxxxxx</code>\n\n` +
+      `💡 <i>Pour diffuser une annonce à tous vos canaux : tapez <code>/broadcast Votre message</code></i>`;
+
+    keyboard.text("🔄 Rafraîchir", "p_channels")
+      .text("🔙 Retour au Menu", "p_menu");
+
+    if (isEdit && ctx.callbackQuery) {
+      try {
+        await ctx.editMessageText(text, { reply_markup: keyboard, parse_mode: 'HTML' });
+        return;
+      } catch (e) {}
+    }
+
+    await ctx.reply(text, { reply_markup: keyboard, parse_mode: 'HTML' });
+  }
+
+  /**
+   * Commande manuelle pour ajouter un canal ou un groupe
+   */
+  static async addChannelManually(ctx, targetInput) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès refusé.");
+    }
+
+    const cleanInput = (targetInput || '').trim();
+    if (!cleanInput) {
+      return ctx.reply(
+        "⚠️ <b>Utilisation :</b> <code>/addchannel @nom_du_canal</code> ou <code>/addchannel -100xxxxxxxxxx</code>\n\n" +
+        "💡 Vous pouvez aussi simplement <b>transférer ici un message</b> venant du canal !",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    try {
+      // 1. Récupérer les informations du chat auprès de Telegram
+      const chat = await ctx.api.getChat(cleanInput);
+      if (!chat) {
+        return ctx.reply(`❌ Impossible de trouver le chat "${cleanInput}".`);
+      }
+
+      // 2. Vérifier si le bot est présent et a les droits
+      let botMember;
+      try {
+        const botInfo = ctx.me || await ctx.api.getMe();
+        botMember = await ctx.api.getChatMember(chat.id, botInfo.id);
+      } catch (err) {
+        return ctx.reply(
+          `❌ <b>Le bot n'a pas accès à ce canal / groupe !</b>\n\n` +
+          `Vérifiez que vous avez bien ajouté le bot comme <b>Administrateur</b> dans le canal avec la permission de publier des messages.`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      const isBotAdmin = ['administrator', 'creator'].includes(botMember?.status);
+      if (!isBotAdmin) {
+        return ctx.reply(
+          `⚠️ <b>Attention :</b> Le bot est dans <b>${escapeHtml(chat.title || cleanInput)}</b> mais n'est <b>pas Administrateur</b>.\n` +
+          `Veuillez le promouvoir administrateur dans les réglages du canal pour qu'il puisse publier des annonces !`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      // 3. Enregistrer dans la base de données
+      const title = chat.title || cleanInput;
+      const type = chat.type || 'channel';
+      const username = chat.username || null;
+      db.addManagedChat(chat.id, title, type, username);
+
+      return ctx.reply(
+        `✅ <b>Canal / Groupe connecté avec succès !</b> 📡\n\n` +
+        `• <b>Nom :</b> ${escapeHtml(title)}\n` +
+        `• <b>Type :</b> ${type === 'channel' ? '📢 Canal' : '👥 Groupe'}\n` +
+        `• <b>ID :</b> <code>${chat.id}</code>\n` +
+        (username ? `• <b>Username :</b> @${escapeHtml(username)}\n` : '') +
+        `\nIl recevra désormais automatiquement toutes les diffusions envoyées via <code>/broadcast</code> !`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[ADMIN] Erreur addChannelManually:', err);
+      return ctx.reply(`❌ Erreur lors de l'ajout du canal : ${err.message}`);
+    }
+  }
+
+  /**
+   * Commande manuelle pour retirer un canal ou groupe
+   */
+  static async removeChannelManually(ctx, targetInput) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès refusé.");
+    }
+
+    const cleanInput = (targetInput || '').trim();
+    if (!cleanInput) {
+      return ctx.reply(
+        "⚠️ <b>Utilisation :</b> <code>/delchannel ID_OU_NOM</code> (voir la liste dans /channels)",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    let targetId = null;
+    const chats = db.getManagedChats();
+
+    if (/^-?\d+$/.test(cleanInput)) {
+      targetId = Number(cleanInput);
+    } else {
+      const needle = cleanInput.replace(/^@/, '').toLowerCase();
+      const found = chats.find(c =>
+        (c.username && c.username.toLowerCase() === needle) ||
+        (c.title && c.title.toLowerCase().includes(needle))
+      );
+      if (found) targetId = found.id;
+    }
+
+    if (!targetId) {
+      return ctx.reply(`❌ Aucun canal ou groupe trouvé correspondant à "${cleanInput}". Tapez /channels pour voir la liste.`);
+    }
+
+    const removed = db.removeManagedChat(targetId);
+    if (removed) {
+      return ctx.reply(`✅ Le canal/groupe (ID: <code>${targetId}</code>) a été retiré de la liste de diffusion.`, { parse_mode: 'HTML' });
+    } else {
+      return ctx.reply(`⚠️ Impossible de retirer le canal/groupe (ID: <code>${targetId}</code>).`);
+    }
+  }
+
+  /**
+   * Discussion personnelle avec l'IA en privé (Assistant Community Manager Télé-Réalité)
+   */
+  static async handlePrivateChat(ctx, userMessage) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return;
+    }
+
+    const cleanMessage = (userMessage || '').trim();
+    if (!cleanMessage) return;
+
+    // Si l'administrateur demande une émission pour vérifier ou regarder
+    const matchedShow = db.findShow(cleanMessage);
+    if (matchedShow) {
+      return ctx.reply(
+        `🎬 <b>Fiche Émission (Mode Admin) :</b>\n\n` +
+        `• Nom : <b>${escapeHtml(matchedShow.name)}</b>\n` +
+        `• Lien direct : ${matchedShow.link}\n` +
+        (matchedShow.description ? `• Description : <i>${escapeHtml(matchedShow.description)}</i>\n` : '') +
+        `• ID interne : <code>${escapeHtml(matchedShow.id)}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const isMasterUser = db.isMaster(ctx.from);
+    const authorName = isMasterUser ? 'Mon Maître' : (ctx.from?.first_name || 'Propriétaire');
+
+    // Mémoriser le message utilisateur
+    conversationSessions.addMessage(userId, 'user', cleanMessage);
+
+    const privateAssistantPrompt = isMasterUser
+      ? `
+Tu es Léna (@Lenasituation_bot), l'animatrice et complice de ton MAÎTRE qui discute avec toi en message privé.
+CONSIGNES STRICTES :
+- Adresse-toi à lui en l'appelant "Maître" ou "Sa Majesté".
+- RÈGLE STRICTE ANTI-PAVÉ : Réponds en 1 ou 2 phrases courtes maximum (25 mots max). INTERDICTION FORMELLE d'écrire un roman, un long paragraphe ou des flatteries grandiloquentes.
+- EMOJIS : Maximum 1 seul emoji discret (ou aucun). Pas d'avalanche d'emojis.
+- TON : Décontracté, cool, complice, direct et naturel.
+- Suis le fil de la discussion avec intelligence.
+`
+      : `
+Tu es Léna (@Lenasituation_bot), animatrice et assistante en Télé-Réalité en discussion privée avec ${authorName}.
+CONSIGNES STRICTES :
+- RÈGLE STRICTE ANTI-PAVÉ : 1 à 2 phrases courtes maximum (25 mots max).
+- EMOJIS : Maximum 1 seul emoji discret (ou aucun).
+- TON : Décontracté, cool, naturel et amical.
+- Suis le fil de la discussion simplement.
+`;
+
+    const allowMimicry = conversationSessions.shouldAllowMimicry(userId, 12);
+
+    try {
+      const history = conversationSessions.getHistory(userId);
+      let response = await geminiService.generateChatResponse(privateAssistantPrompt, history, 120, allowMimicry);
+      if (response) {
+        if (isMasterUser && !/\b(maître|maitre|sa majesté|sa majeste|seigneur)\b/i.test(response)) {
+          response = `À vos ordres, Maître ! ✨ ${response}`;
+        }
+        conversationSessions.addMessage(userId, 'assistant', response);
+        conversationSessions.recordTurn(userId, allowMimicry);
+        await ctx.reply(response, { reply_to_message_id: ctx.message?.message_id });
+        return;
+      }
+    } catch (err) {
+      console.error('[PRIVATE ADMIN] Erreur IA assistant privé:', err);
+    }
+
+    const fallbackMsg = isMasterUser
+      ? "À vos ordres, Maître ! Votre volonté est ma loi. Que désire Sa Majesté pour le canal ? 👑✨"
+      : "Je suis là avec toi ! Dis-moi tout, de quoi avons-nous besoin pour le canal ? 🍿";
+    await ctx.reply(fallbackMsg);
+  }
+}

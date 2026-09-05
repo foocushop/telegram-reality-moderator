@@ -1,0 +1,43 @@
+{
+  "version": "2.0",
+  "timestamp": "2026-09-04T23:04:14.770Z",
+  "reason": "Démarrage et synchronisation initiale",
+  "showsCount": 1,
+  "stats": {
+    "messagesScanned": 28,
+    "imagesScanned": 4,
+    "bansCount": 19,
+    "mutesCount": 21,
+    "startedAt": "2026-09-04T14:55:45.571Z"
+  },
+  "ownerId": 5514712683,
+  "mainGroupId": -1004371567437,
+  "adminIds": [
+    7777,
+    9999,
+    999999,
+    1661892692,
+    9366618,
+    10825069,
+    10271813,
+    13053797,
+    5514712683
+  ],
+  "shows": {
+    "la-villa-des-coeurs-brises": {
+      "id": "la-villa-des-coeurs-brises",
+      "name": "La Villa des Cœurs Brisés",
+      "link": "https://t.me/+wluVMI3_rH4zZDI0",
+      "description": "Saison 11",
+      "aliases": [
+        "la villa des cœurs brisés",
+        "la villa des coeurs brisés",
+        "la villa des coeurs brises",
+        "villa des coeurs brises"
+      ],
+      "addedAt": "2026-09-04T21:39:21.415Z"
+    }
+  },
+  "bannedUsers": {},
+  "mutedUsers": {}
+}

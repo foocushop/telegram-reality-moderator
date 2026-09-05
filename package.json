@@ -1,0 +1,30 @@
+{
+  "name": "telegram-reality-moderator",
+  "version": "1.0.0",
+  "description": "Bot Telegram intelligent et 100% gratuit de modération pour communauté Télé-Réalité avec vision IA et sanctions graduées",
+  "type": "module",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "node --watch src/bot.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "keywords": [
+    "telegram",
+    "moderation",
+    "gemini",
+    "ai",
+    "bot",
+    "tele-realite"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^2.21.0",
+    "dotenv": "^16.4.7",
+    "grammy": "^1.35.0"
+  },
+  "devDependencies": {
+    "@huggingface/hub": "^2.16.3"
+  }
+}

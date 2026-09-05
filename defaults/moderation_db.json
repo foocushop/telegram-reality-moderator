@@ -1,0 +1,318 @@
+{
+  "bannedUsers": {},
+  "mutedUsers": {},
+  "infractions": {
+    "99999999": [
+      {
+        "date": "2026-09-04T14:55:45.717Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T14:55:45.720Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T14:55:57.932Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T14:55:57.937Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:13:51.022Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:13:51.028Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:14:00.032Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:14:00.036Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:21:37.960Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:21:37.965Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:31:19.770Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:31:19.817Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:35:29.982Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:35:29.988Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:35:50.503Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:35:50.508Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:46:25.552Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:46:25.559Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:46:40.205Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:46:40.210Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:47:18.090Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:47:18.096Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:56:12.162Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T15:56:12.167Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T15:56:12.172Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      },
+      {
+        "date": "2026-09-04T16:04:18.823Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T16:04:18.828Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T16:04:18.833Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      },
+      {
+        "date": "2026-09-04T16:39:55.742Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T16:39:55.746Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T16:39:55.749Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      },
+      {
+        "date": "2026-09-04T16:40:26.679Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T16:40:26.682Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T16:40:26.685Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      },
+      {
+        "date": "2026-09-04T16:40:40.225Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T16:40:40.229Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T16:40:40.233Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      },
+      {
+        "date": "2026-09-04T16:40:55.422Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T16:40:55.427Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T16:40:55.430Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      },
+      {
+        "date": "2026-09-04T17:02:03.882Z",
+        "type": "ban",
+        "reason": "Image NSFW"
+      },
+      {
+        "date": "2026-09-04T17:02:03.889Z",
+        "type": "mute"
+      },
+      {
+        "date": "2026-09-04T17:02:03.893Z",
+        "type": "warning",
+        "reason": "Spam emoji"
+      }
+    ],
+    "5514712683": [
+      {
+        "date": "2026-09-04T15:13:43.658Z",
+        "type": "mute",
+        "reason": "Mise en sourdine manuelle par un administrateur"
+      },
+      {
+        "date": "2026-09-04T15:32:49.928Z",
+        "type": "mute",
+        "reason": "Insulte vulgaire dirigée aux membres du groupe"
+      },
+      {
+        "date": "2026-09-04T15:38:21.118Z",
+        "type": "ban",
+        "reason": "Image explicitement pornographique montrant une zone anale dénudée."
+      },
+      {
+        "date": "2026-09-04T15:40:41.837Z",
+        "type": "mute",
+        "reason": "Message contenant une insulte vulgaire dirigée aux membres du groupe."
+      }
+    ]
+  },
+  "warnings": {},
+  "mainGroupId": -1002458203612,
+  "ownerId": 5514712683,
+  "masterUsername": "gankpai",
+  "masterId": 1661892692,
+  "masters": [
+    {
+      "username": "gankpai",
+      "id": 1661892692,
+      "addedAt": "2026-09-04T22:00:00.000Z"
+    }
+  ],
+  "adminIds": [
+    7777,
+    9999,
+    999999,
+    1661892692,
+    9366618,
+    10825069,
+    10271813,
+    13053797,
+    5514712683
+  ],
+  "shows": {
+    "la-villa-des-coeurs-brises": {
+      "id": "la-villa-des-coeurs-brises",
+      "name": "La Villa des Cœurs Brisés",
+      "link": "https://t.me/+wluVMI3_rH4zZDI0",
+      "description": "Saison 11",
+      "aliases": [
+        "la villa des cœurs brisés",
+        "la villa des coeurs brisés",
+        "la villa des coeurs brises",
+        "villa des coeurs brises"
+      ],
+      "addedAt": "2026-09-04T21:39:21.415Z"
+    }
+  },
+  "stats": {
+    "messagesScanned": 30,
+    "imagesScanned": 5,
+    "bansCount": 19,
+    "mutesCount": 21,
+    "startedAt": "2026-09-04T14:55:45.571Z"
+  },
+  "knownUsers": {
+    "112233": {
+      "userId": 112233,
+      "username": "troll_user",
+      "fullName": "Troll",
+      "lastSeen": "2026-09-04T17:02:03.915Z"
+    },
+    "445566": {
+      "userId": 445566,
+      "username": "troublemaker",
+      "fullName": "Bob",
+      "lastSeen": "2026-09-04T17:02:03.916Z"
+    },
+    "556677": {
+      "userId": 556677,
+      "username": "perturbe_tv",
+      "fullName": "Perturbateur TV",
+      "lastSeen": "2026-09-04T17:02:03.918Z"
+    },
+    "1661892692": {
+      "userId": 1661892692,
+      "username": "Gankpai",
+      "fullName": "M8🇫🇷Gako",
+      "lastSeen": "2026-09-04T22:06:44.384Z"
+    },
+    "5514712683": {
+      "userId": 5514712683,
+      "username": "GrandJD",
+      "fullName": "GrandJD",
+      "lastSeen": "2026-09-04T23:34:29.726Z"
+    },
+    "8862986918": {
+      "userId": 8862986918,
+      "username": "Lenasituation_bot",
+      "fullName": "Léna situation",
+      "lastSeen": "2026-09-04T15:38:21.377Z"
+    }
+  },
+  "usernameToId": {
+    "grandjd": 5514712683,
+    "lenasituation_bot": 8862986918,
+    "gankpai": 1661892692,
+    "troll_user": 112233,
+    "troublemaker": 445566,
+    "perturbe_tv": 556677
+  }
+}

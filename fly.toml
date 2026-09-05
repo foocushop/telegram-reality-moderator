@@ -1,0 +1,16 @@
+# fly.toml - Configuration Fly.io pour Bot Telegram Léna Modératrice
+
+app = "lena-moderator-bot"
+primary_region = "cdg"
+
+[build]
+
+# Volume persistant gratuit de 1 Go pour sauvegarder la base de données et les séries
+[mounts]
+  source = "lena_data"
+  destination = "/app/data"
+  initial_size = "1gb"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
