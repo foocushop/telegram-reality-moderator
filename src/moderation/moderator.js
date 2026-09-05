@@ -579,12 +579,12 @@ export class Moderator {
       const allowMimicry = conversationSessions.shouldAllowGroupMimicry(12);
       
       // OPTIMISATION ADAPTATIVE DE CONTEXTE (-75% de tokens consommés) :
-      // 20 messages uniquement si demande de situation/débriefing, sinon 3 messages suffisent amplement !
+      // 8 messages uniquement si demande de situation/débriefing, sinon 2 messages suffisent amplement !
       const isSituationQuery = (
         isMasterAskingSituation ||
         /\b(se passe quoi|qui se passe|quoi le (problème|probleme|souci)|qui a fait quoi|explique|raconte|qu'?est[ -]?ce qu'?il y a|pourquoi tu m'?as (appelé|appele|ping|notifié|notifie)|qui t'?a appel[ée]|un problème|c'?est quoi|résumé|resume|quoi de neuf)\b/i.test(text)
       );
-      const contextDepth = isSituationQuery ? 20 : 3;
+      const contextDepth = isSituationQuery ? 8 : 2;
       const recentHistory = this.getRecentMessages(contextDepth);
 
       console.log(`[BOT REASONING] Réponse directe demandée par ${authorName} (isMaster: ${isMaster}, allowMimicry: ${allowMimicry}, context: ${contextDepth} msgs) ("${text}")`);
@@ -625,8 +625,8 @@ export class Moderator {
       (text.includes('?') && text.split(/\s+/).length >= 3)
     );
 
-    // Anti-spam pour les questions ordinaires : 20s et 2 messages
-    const timeSinceLast = Date.now() - this.lastInterventionTime;
+    const now = Date.now();
+    const timeSinceLast = now - this.lastInterventionTime;
     const isCooldownActive = timeSinceLast < 20000 && this.messagesSinceLastIntervention < 2;
 
     // Taux de réponse aléatoire éventuel (si configuré)
@@ -642,7 +642,7 @@ export class Moderator {
     if (shouldEvaluate) {
       console.log(`[BOT REASONING] Évaluation d'intervention autonome pour le message de ${authorName} (Help: ${hasHelpSigns}, Tension: ${hasTensionSigns})...`);
       
-      const evaluation = await geminiService.evaluateIntervention(this.getRecentMessages(20), text, authorName);
+      const evaluation = await geminiService.evaluateIntervention(this.getRecentMessages(6), text, authorName);
       
       if (evaluation.shouldReply && evaluation.suggestedReply) {
         console.log(`[INTERVENTION AUTONOME] ✅ Intervention validée (Raison : ${evaluation.reason}) : "${evaluation.suggestedReply}"`);

@@ -27,8 +27,8 @@ export class ConversationSessionManager {
     if (!content) return;
     const session = this.getSession(userId);
     session.messages.push({ role, content });
-    // Conserver un historique fluide des 12 derniers messages (6 échanges)
-    if (session.messages.length > 12) {
+    // Conserver un historique fluide et économique des 6 derniers messages (3 échanges)
+    if (session.messages.length > 6) {
       session.messages.shift();
     }
     session.lastActivity = Date.now();

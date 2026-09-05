@@ -150,14 +150,14 @@ Tu DOIS répondre STRICTEMENT au format JSON :
 
 export function buildInterventionPrompt(recentMessages, currentMessage, userName, personaContext) {
   const historyText = (recentMessages || [])
-    .slice(-20)
+    .slice(-8)
     .map(m => `${m.isBot ? 'Léna (Modératrice)' : m.userName}: "${m.text}"`)
     .join('\n');
 
   return `
 ${personaContext}
 
-[HISTORIQUE RÉCENT DES DERNIERS ÉCHANGES DANS LE CHAT (JUSQU'À 20 DERNIERS MESSAGES)]
+[HISTORIQUE RÉCENT DES ÉCHANGES DU GROUPE]
 ${historyText || '(Aucun message récent)'}
 
 [NOUVEAU MESSAGE REÇU]
