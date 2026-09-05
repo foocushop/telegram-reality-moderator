@@ -574,37 +574,58 @@ async function bootstrap() {
     console.error('[PROCESS] Exception non capturée interceptée :', err);
   });
 
-  // Serveur HTTP de santé / Healthcheck (requis pour Hugging Face Spaces, Render et pings)
+  // Serveur HTTP de santé / Healthcheck (requis pour Render et pings)
   const port = process.env.PORT || 7860;
+  let totalPingsReceived = 0;
   const server = http.createServer((req, res) => {
+    totalPingsReceived++;
+    const now = new Date().toLocaleTimeString('fr-FR');
+    console.log(`[HTTP SERVEUR] 📥 [${now}] Signal d'activité reçu #${totalPingsReceived} (${req.method} ${req.url}) -> Compteur Render remis à zéro !`);
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'online',
       bot: botInfo?.username || 'Lenasituation_bot',
       managedChats: db.getManagedChats().length,
+      pingsReceived: totalPingsReceived,
       uptimeSeconds: Math.round(process.uptime()),
       timestamp: new Date().toISOString()
     }));
   });
   server.listen(port, () => {
-    console.log(`🌐 Serveur HTTP de statut actif sur le port ${port}`);
+    console.log(`🌐 Serveur HTTP actif sur le port ${port} (prêt à recevoir les auto-pings Render)`);
   });
 
   // Système d'auto-maintien éveillé intégré (Self-Ping automatique pour Render)
   // Évite STRICTEMENT d'avoir à configurer un cron job externe !
   const renderExternalUrl = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
   if (renderExternalUrl) {
-    console.log(`[SELF-PING] ⏰ Maintien automatique activé sur ${renderExternalUrl} (toutes les 9 minutes)`);
-    setInterval(async () => {
+    let pingCount = 0;
+    console.log(`[SELF-PING] ⏰ Maintien automatique activé sur : ${renderExternalUrl}`);
+    console.log(`[SELF-PING] 🚀 Premier test de signal de vie dans 30 secondes (pour vérifier le bon fonctionnement)...`);
+
+    const sendPing = async () => {
+      pingCount++;
+      const startTime = Date.now();
+      const timeStr = new Date().toLocaleTimeString('fr-FR');
       try {
         const pingRes = await fetch(renderExternalUrl);
+        const duration = Date.now() - startTime;
         if (pingRes.ok) {
-          console.log('[SELF-PING] 💓 Signal de vie envoyé à Render : bot maintenu éveillé 24h/24.');
+          console.log(`[SELF-PING] 💓 [${timeStr}] Signal #${pingCount} envoyé avec succès (${renderExternalUrl}) [${duration}ms] -> Bot maintenu éveillé 24h/24 !`);
+        } else {
+          console.warn(`[SELF-PING] ⚠️ [${timeStr}] Signal #${pingCount} : Statut HTTP ${pingRes.status} reçu de Render.`);
         }
       } catch (err) {
-        // Ignorer les erreurs réseau temporaires
+        console.error(`[SELF-PING] ⚠️ [${timeStr}] Échec temporaire du ping :`, err.message);
       }
-    }, 9 * 60 * 1000); // Toutes les 9 minutes (en-dessous des 15 minutes d'inactivité de Render)
+    };
+
+    // 1. Premier ping rapide après 30 secondes pour que vous le voyiez immédiatement dans la console
+    setTimeout(sendPing, 30 * 1000);
+
+    // 2. Puis toutes les 9 minutes en continu
+    setInterval(sendPing, 9 * 60 * 1000);
   }
 
   // Démarrage du bot avec écoute continue (long-polling) et support explicite des canaux
