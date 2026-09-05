@@ -587,8 +587,25 @@ async function bootstrap() {
     }));
   });
   server.listen(port, () => {
-    console.log(`🌐 Serveur HTTP de statut actif sur le port ${port} (pour Hugging Face & pings)`);
+    console.log(`🌐 Serveur HTTP de statut actif sur le port ${port}`);
   });
+
+  // Système d'auto-maintien éveillé intégré (Self-Ping automatique pour Render)
+  // Évite STRICTEMENT d'avoir à configurer un cron job externe !
+  const renderExternalUrl = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
+  if (renderExternalUrl) {
+    console.log(`[SELF-PING] ⏰ Maintien automatique activé sur ${renderExternalUrl} (toutes les 9 minutes)`);
+    setInterval(async () => {
+      try {
+        const pingRes = await fetch(renderExternalUrl);
+        if (pingRes.ok) {
+          console.log('[SELF-PING] 💓 Signal de vie envoyé à Render : bot maintenu éveillé 24h/24.');
+        }
+      } catch (err) {
+        // Ignorer les erreurs réseau temporaires
+      }
+    }, 9 * 60 * 1000); // Toutes les 9 minutes (en-dessous des 15 minutes d'inactivité de Render)
+  }
 
   // Démarrage du bot avec écoute continue (long-polling) et support explicite des canaux
   console.log('✅ Le bot écoute activement les messages Telegram...');
