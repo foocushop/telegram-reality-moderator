@@ -168,8 +168,11 @@ export class Moderator {
         }
       }
 
-      // 5.3. ANALYSE SÉMANTIQUE IA (Pour propos insidieux ou ambigus, hors demandes d'émissions)
-      if (geminiService.isConfigured && text.split(/\s+/).length >= 3 && !this.detectShowOrLinkRequest(text).isRequest) {
+      const isReplyMsg = Boolean(message.reply_to_message && message.reply_to_message.from);
+      const isModOrderMsg = isModerationCommandPhrase(text, isReplyMsg);
+
+      // 5.3. ANALYSE SÉMANTIQUE IA (Pour propos insidieux ou ambigus, hors demandes d'émissions et ordres)
+      if (geminiService.isConfigured && text.split(/\s+/).length >= 3 && !this.detectShowOrLinkRequest(text).isRequest && !isModOrderMsg) {
         const aiVerdict = await geminiService.analyzeText(text);
         if (aiVerdict.isViolation) {
           if (aiVerdict.action === 'ban') {

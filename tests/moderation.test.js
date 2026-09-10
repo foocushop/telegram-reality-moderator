@@ -870,6 +870,75 @@ test('Diffusion Multi-Canaux & Multi-Groupes (/broadcast) : Envoi global, nettoy
   assert.equal(db.getManagedChats().some(c => c.id === -1001001), false);
 });
 
+test('AuditService : Enregistrement console et relais direct vers le canal Telegram dédié', async () => {
+  const { AuditService, stripHtml } = await import('../src/services/auditService.js');
+
+  // 1. Test stripHtml
+  assert.equal(stripHtml('<b>Bonjour</b> <i>mon ami</i>'), 'Bonjour mon ami');
+  assert.equal(stripHtml('Pas de balise'), 'Pas de balise');
+  assert.equal(stripHtml(null), '');
+
+  // 2. Test configuration du canal d'audit
+  const testAuditChannelId = '-100999888777';
+  db.setAuditChannelId(testAuditChannelId);
+  assert.equal(db.getAuditChannelId(), testAuditChannelId);
+  assert.equal(db.getEffectiveAuditChannelId(), testAuditChannelId);
+
+  // 3. Test logPrivateInteraction avec envoi vers Telegram
+  let telegramSent = null;
+  const mockCtx = {
+    from: { id: 5514712683, username: 'GrandJD', first_name: 'Jean', last_name: 'Dupont' },
+    api: {
+      sendMessage: async (chatId, text, opts) => {
+        telegramSent = { chatId, text, opts };
+        return { message_id: 1234 };
+      }
+    }
+  };
+
+  await AuditService.logPrivateInteraction(
+    mockCtx,
+    "Salut Léna, tu as les marseillais ?",
+    "Voici votre lien pour regarder <b>Les Marseillais</b> :\n👉 https://lien.tv"
+  );
+
+  assert.ok(telegramSent, "Un message doit avoir été envoyé au canal d'audit");
+  assert.equal(telegramSent.chatId, testAuditChannelId, "Doit viser le bon canal d'audit");
+  assert.ok(telegramSent.text.includes('AUDIT CHAT PRIVÉ'), "Doit contenir l'en-tête d'audit");
+  assert.ok(telegramSent.text.includes('GrandJD'), "Doit contenir le pseudo du membre");
+  assert.ok(telegramSent.text.includes('5514712683'), "Doit contenir l'ID Telegram");
+  assert.ok(telegramSent.text.includes('Salut Léna, tu as les marseillais ?'), "Doit contenir le message reçu");
+  assert.ok(telegramSent.text.includes('Les Marseillais'), "Doit contenir la réponse");
+
+  // 4. Test sendTestMessage
+  let testMsgSent = null;
+  const mockApi = {
+    sendMessage: async (chatId, text, opts) => {
+      testMsgSent = { chatId, text };
+      return true;
+    }
+  };
+  await AuditService.sendTestMessage(mockApi, testAuditChannelId);
+  assert.ok(testMsgSent);
+  assert.ok(testMsgSent.text.includes('TEST CANAL D\'AUDIT PRIVÉ'));
+
+  // 5. Test résilience en cas d'erreur de transmission Telegram
+  const failingCtx = {
+    from: { id: 123, username: 'test' },
+    api: {
+      sendMessage: async () => {
+        throw new Error('Forbidden: bot was kicked from the channel chat');
+      }
+    }
+  };
+  // Ne doit pas lever d'erreur
+  await AuditService.logPrivateInteraction(failingCtx, "Coucou", "Salut !");
+
+  // Nettoyage
+  db.setAuditChannelId(null);
+  assert.equal(db.getAuditChannelId(), null);
+});
+
 test.after(() => {
   const files = [
     'data/test_moderation_db.json',

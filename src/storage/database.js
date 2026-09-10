@@ -36,6 +36,7 @@ export class ModerationDatabase {
       infractions: {}, // { [userId]: [ { date, type, reason } ] }
       warnings: {},    // { [userId]: [ { date, reason, by } ] }
       mainGroupId: null, // ID du groupe Telegram principal géré
+      auditChannelId: null, // ID du canal Telegram dédié à l'audit des chats privés
       ownerId: null,     // ID Telegram du propriétaire du groupe
       masterUsername: null, // @username du Maître / Dieu suprême du bot (legacy/principal)
       masterId: null,       // ID Telegram du Maître suprême (legacy/principal)
@@ -619,6 +620,21 @@ export class ModerationDatabase {
 
   getOwnerId() {
     return this.data.ownerId || null;
+  }
+
+  // --- Gestion du Canal d'Audit Dédié (Surveillance des chats privés) ---
+  setAuditChannelId(channelId) {
+    this.data.auditChannelId = channelId ? String(channelId).trim() : null;
+    this.save();
+    return this.data.auditChannelId;
+  }
+
+  getAuditChannelId() {
+    return this.data.auditChannelId || null;
+  }
+
+  getEffectiveAuditChannelId() {
+    return this.data.auditChannelId || (process.env.AUDIT_CHANNEL_ID ? String(process.env.AUDIT_CHANNEL_ID).trim() : null) || null;
   }
 
   // --- Gestion des Maîtres Suprêmes / Dieux du Bot ---

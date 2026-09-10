@@ -30,6 +30,9 @@ export const config = {
   // Notifier dans le chat lorsqu'un membre est banni ou muté
   notifyChatOnAction: process.env.NOTIFY_CHAT_ON_ACTION !== 'false',
 
+  // ID du canal d'audit dédié pour la surveillance des conversations privées des membres
+  auditChannelId: process.env.AUDIT_CHANNEL_ID ? String(process.env.AUDIT_CHANNEL_ID).trim() : null,
+
   // ID Telegram des administrateurs (séparés par des virgules), immunisés contre la modération
   adminUserIds: (process.env.ADMIN_USER_IDS || '')
     .split(',')

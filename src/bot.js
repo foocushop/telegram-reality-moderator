@@ -169,6 +169,28 @@ async function bootstrap() {
     }
   });
 
+  // /setaudit ou /audit_channel pour configurer le canal d'audit dédié
+  bot.command(['setaudit', 'audit_channel', 'set_audit'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(setaudit|audit_channel|set_audit)\s*/i, '').trim();
+      return PrivateAdminManager.setAuditChannelCommand(ctx, args);
+    }
+  });
+
+  // /testaudit pour tester l'envoi d'un message dans le canal d'audit
+  bot.command('testaudit', async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.testAuditChannelCommand(ctx);
+    }
+  });
+
+  // /unsetaudit pour désactiver le relais d'audit Telegram
+  bot.command('unsetaudit', async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.unsetAuditChannelCommand(ctx);
+    }
+  });
+
   // /bans en privé
   bot.command('bans', async (ctx) => {
     if (ctx.chat?.type === 'private') {

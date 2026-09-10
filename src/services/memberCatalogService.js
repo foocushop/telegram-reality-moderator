@@ -3,6 +3,7 @@ import { escapeHtml } from '../utils/format.js';
 import { geminiService } from '../ai/gemini.js';
 import { conversationSessions } from '../ai/conversationSession.js';
 import { Moderator } from '../moderation/moderator.js';
+import { AuditService } from './auditService.js';
 
 export class MemberCatalogService {
   /**
@@ -64,7 +65,9 @@ export class MemberCatalogService {
     // 0. Réinitialiser la session si demandé
     if (cleanText === '/reset') {
       conversationSessions.resetSession(userId);
-      return ctx.reply("✨ C'est noté, on repart de zéro ! Coucou, comment ça va ?");
+      const resetMsg = "✨ C'est noté, on repart de zéro ! Coucou, comment ça va ?";
+      await AuditService.logPrivateInteraction(ctx, cleanText, resetMsg);
+      return ctx.reply(resetMsg);
     }
 
     // 1. Demande directe de liste / catalogue
@@ -72,6 +75,7 @@ export class MemberCatalogService {
       conversationSessions.addMessage(userId, 'user', cleanText);
       const catMsg = this.getCatalogMessage();
       conversationSessions.addMessage(userId, 'assistant', catMsg);
+      await AuditService.logPrivateInteraction(ctx, cleanText, catMsg);
       return ctx.reply(catMsg, { parse_mode: 'HTML' });
     }
 
@@ -85,6 +89,7 @@ export class MemberCatalogService {
       conversationSessions.addMessage(userId, 'user', cleanText);
       conversationSessions.addMessage(userId, 'assistant', `Voici le lien pour regarder ${matchedShow.name} : ${matchedShow.link}`);
       conversationSessions.incrementMentionCount(userId);
+      await AuditService.logPrivateInteraction(ctx, cleanText, showReply);
       return ctx.reply(showReply, { parse_mode: 'HTML' });
     }
 
@@ -164,6 +169,7 @@ ${showsListStr}
         if (isFirstContact) {
           conversationSessions.incrementMentionCount(userId);
         }
+        await AuditService.logPrivateInteraction(ctx, cleanText, reply);
         return ctx.reply(reply);
       }
     } catch (e) {
@@ -180,6 +186,7 @@ ${showsListStr}
     }
 
     conversationSessions.addMessage(userId, 'assistant', fallbackReply);
+    await AuditService.logPrivateInteraction(ctx, cleanText, fallbackReply);
     return ctx.reply(fallbackReply);
   }
 }

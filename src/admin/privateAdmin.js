@@ -7,6 +7,7 @@ import { ActionManager } from '../moderation/actionManager.js';
 import { escapeHtml } from '../utils/format.js';
 import { geminiService } from '../ai/gemini.js';
 import { conversationSessions } from '../ai/conversationSession.js';
+import { AuditService } from '../services/auditService.js';
 
 export class PrivateAdminManager {
   /**
@@ -810,6 +811,16 @@ export class PrivateAdminManager {
       text += `\n`;
     }
 
+    const auditId = db.getEffectiveAuditChannelId();
+    text += `🕵️ <b>CANAL D'AUDIT PRIVÉ (Surveillance MP) :</b>\n`;
+    if (auditId) {
+      text += `• Statut : <b>✅ Actif</b> (ID : <code>${auditId}</code>)\n`;
+      text += `• <i>Tapez <code>/testaudit</code> pour tester ou <code>/unsetaudit</code> pour désactiver.</i>\n\n`;
+    } else {
+      text += `• Statut : <i>Non configuré (Logs console Render seuls)</i>\n`;
+      text += `• <i>Pour recevoir une copie des messages privés dans un canal : tapez <code>/setaudit ID_CANAL</code></i>\n\n`;
+    }
+
     text += `➕ <b>COMMENT AJOUTER UN NOUVEAU CANAL OU GROUPE :</b>\n` +
       `1️⃣ <b>Méthode automatique :</b> Ajoutez le bot comme <b>Administrateur</b> dans votre canal ou groupe (avec le droit de publier des messages). Le bot l'enregistre instantanément !\n` +
       `2️⃣ <b>Méthode transfert :</b> Transférez n'importe quel message de votre canal directement ici dans cette discussion privée avec le bot.\n` +
@@ -938,6 +949,119 @@ export class PrivateAdminManager {
     } else {
       return ctx.reply(`⚠️ Impossible de retirer le canal/groupe (ID: <code>${targetId}</code>).`);
     }
+  }
+
+  /**
+   * Commande manuelle pour configurer le canal d'audit dédié
+   */
+  static async setAuditChannelCommand(ctx, input) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const cleanInput = (input || '').trim();
+    if (!cleanInput) {
+      const currentAuditId = db.getEffectiveAuditChannelId();
+      return ctx.reply(
+        `🕵️ <b>CONFIGURATION DU CANAL D'AUDIT PRIVÉ</b>\n\n` +
+        (currentAuditId ? `• Canal d'audit actuel : <code>${currentAuditId}</code>\n\n` : `• Statut actuel : <i>Aucun canal configuré</i>\n\n`) +
+        `📝 <b>Utilisation :</b> <code>/setaudit ID_OU_NOM_CANAL</code>\n` +
+        `<i>Exemple :</i> <code>/setaudit -1001234567890</code>\n\n` +
+        `💡 <b>Étapes :</b>\n` +
+        `1. Créez un canal privé Telegram (ex: "Audit Bot Léna").\n` +
+        `2. Ajoutez le bot comme <b>Administrateur</b> avec la permission de publier des messages.\n` +
+        `3. Tapez <code>/setaudit ID_DU_CANAL</code> ou <code>/setaudit @nom_du_canal</code>.\n` +
+        `4. Le bot enverra immédiatement un message de confirmation dans le canal !`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    try {
+      // 1. Récupérer les informations du chat
+      const chat = await ctx.api.getChat(cleanInput);
+      if (!chat) {
+        return ctx.reply(`❌ Impossible de trouver le canal "${cleanInput}".`);
+      }
+
+      // 2. Tester l'envoi d'un message pour valider les droits administrateurs
+      try {
+        await AuditService.sendTestMessage(ctx.api, chat.id);
+      } catch (sendErr) {
+        return ctx.reply(
+          `❌ <b>Échec de validation des droits d'écriture !</b>\n\n` +
+          `Le bot n'a pas pu publier dans le canal <b>${escapeHtml(chat.title || cleanInput)}</b>.\n\n` +
+          `👉 <i>Veuillez vérifier que le bot est bien ajouté en tant qu'<b>Administrateur</b> avec l'autorisation de publier des messages.</i>\n\n` +
+          `Détail de l'erreur : <code>${escapeHtml(sendErr.message)}</code>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      // 3. Sauvegarder dans la base de données
+      db.setAuditChannelId(chat.id);
+
+      return ctx.reply(
+        `✅ <b>Canal d'audit configuré avec succès !</b> 🕵️📡\n\n` +
+        `• <b>Canal :</b> ${escapeHtml(chat.title || cleanInput)}\n` +
+        `• <b>ID :</b> <code>${chat.id}</code>\n\n` +
+        `🎉 <b>Un message de validation a été envoyé dans le canal.</b>\n` +
+        `Désormais, tous les messages privés échangés entre les membres et Léna y seront fidèlement transmis en direct !`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[ADMIN] Erreur setAuditChannelCommand:', err);
+      return ctx.reply(`❌ Erreur lors de la configuration du canal d'audit : ${err.message}`);
+    }
+  }
+
+  /**
+   * Commande manuelle pour tester le canal d'audit
+   */
+  static async testAuditChannelCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const auditChannelId = db.getEffectiveAuditChannelId();
+    if (!auditChannelId) {
+      return ctx.reply(
+        "⚠️ <b>Aucun canal d'audit n'est configuré pour le moment.</b>\n\n" +
+        "Pour en définir un, tapez : <code>/setaudit ID_DU_CANAL</code>",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    try {
+      await AuditService.sendTestMessage(ctx.api, auditChannelId);
+      return ctx.reply(
+        `✅ <b>Test réussi !</b> Un message de vérification vient d'être publié dans votre canal d'audit (<code>${auditChannelId}</code>).`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      return ctx.reply(
+        `❌ <b>Erreur lors du test :</b> ${escapeHtml(err.message)}\n\n` +
+        `Vérifiez que le bot est toujours administrateur dans le canal <code>${auditChannelId}</code>.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  }
+
+  /**
+   * Commande manuelle pour désactiver le canal d'audit
+   */
+  static async unsetAuditChannelCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    db.setAuditChannelId(null);
+    return ctx.reply(
+      "✅ <b>Le relais vers le canal d'audit Telegram a été désactivé.</b>\n\n" +
+      "💡 Les échanges privés continueront d'apparaître normalement dans vos logs Render.",
+      { parse_mode: 'HTML' }
+    );
   }
 
   /**
