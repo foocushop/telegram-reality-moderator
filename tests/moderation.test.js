@@ -12,6 +12,7 @@ import { Moderator } from '../src/moderation/moderator.js';
 import { ImageScanner } from '../src/moderation/imageScanner.js';
 import { geminiService } from '../src/ai/gemini.js';
 import { PrivateAdminManager } from '../src/admin/privateAdmin.js';
+import { CloudSyncService } from '../src/services/cloudSyncService.js';
 
 test('Normalisation de texte anti-contournement', () => {
   assert.equal(normalizeText('Puuuutain !'), 'puutain !');
@@ -1017,8 +1018,9 @@ test('Gestion des Utilisateurs Privés, Envoi Ciblé (/send) et Broadcast Utilis
   assert.ok(broadcastReport.includes('RAPPORT DE DIFFUSION UTILISATEURS'));
   assert.ok(broadcastReport.includes('Distribués avec succès'));
 
-  // L'utilisateur 333003 ayant bloqué le bot doit avoir été retiré de la liste
-  assert.equal(db.getPrivateUsers().some(u => u.userId === 333003), false, "L'utilisateur bloqueur doit être nettoyé");
+  // L'utilisateur 333003 ayant bloqué le bot est marqué inaccessible mais conservé en base (non destructif !)
+  assert.equal(db.getPrivateUsers(true).some(u => u.userId === 333003), false, "L'utilisateur bloqueur ne doit plus être dans les joignables");
+  assert.equal(db.getPrivateUsers(false).some(u => u.userId === 333003), true, "L'utilisateur est conservé en base");
 
   // 6. Test Import & Export Shows JSON
   const jsonExport = db.exportShowsJson();
@@ -1048,7 +1050,102 @@ test('Gestion des Utilisateurs Privés, Envoi Ciblé (/send) et Broadcast Utilis
   db.removePrivateUser(111001);
   db.removePrivateUser(222002);
   db.removePrivateUser(444004);
+  db.removePrivateUser(333003);
   db.removeShow("Koh Lanta Saison 25");
+});
+
+test('CloudSyncService : Sauvegarde d\'état persistante et Auto-Hydration Cloud Telegram (Résistance aux redéploiements Render)', async () => {
+  // 1. Configuration du stockage
+  db.setStorageChatId(-100888777666);
+  assert.equal(CloudSyncService.getStorageChatId(), -100888777666);
+
+  // 2. Mock API Telegram pour sendDocument, pinChatMessage, getChat, getFile
+  let uploadedDoc = null;
+  let pinnedMsgId = null;
+  let capturedStateBuffer = null;
+
+  const mockApi = {
+    token: 'test_token',
+    sendDocument: async (chatId, inputFile, opts) => {
+      uploadedDoc = { chatId, inputFile, opts };
+      // Extraire le buffer
+      capturedStateBuffer = inputFile.fileData;
+      return { message_id: 12345 };
+    },
+    pinChatMessage: async (chatId, msgId, opts) => {
+      pinnedMsgId = msgId;
+      return true;
+    },
+    getChat: async (chatId) => {
+      return {
+        id: chatId,
+        title: 'Canal Persistance Cloud',
+        pinned_message: {
+          message_id: 12345,
+          caption: '📦 #CLOUD_STATE_BACKUP [Auto-Sync]',
+          document: {
+            file_name: 'reality_bot_cloud_backup.json',
+            file_id: 'fake_cloud_file_id'
+          }
+        }
+      };
+    },
+    getFile: async (fileId) => {
+      return { file_path: 'documents/reality_bot_cloud_backup.json' };
+    }
+  };
+
+  // 3. Test Sauvegarde Cloud
+  db.addShow("Pékin Express All Stars", "https://stream.tv/pekin", "Saison Légendes");
+  db.savePrivateUser({ id: 998877, username: 'CloudMember', first_name: 'Cloud' });
+
+  const saveRes = await CloudSyncService.saveToCloud(mockApi, 'test_run');
+  assert.equal(saveRes.success, true);
+  assert.equal(pinnedMsgId, 12345);
+  assert.ok(uploadedDoc.opts.caption.includes('#CLOUD_STATE_BACKUP'));
+
+  // 4. Test Auto-Hydration Cloud (simule un redémarrage complet sur Render avec conteneur neuf)
+  const savedStateJson = capturedStateBuffer.toString('utf-8');
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (typeof url === 'string' && url.includes('reality_bot_cloud_backup.json')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => savedStateJson
+      };
+    }
+    return originalFetch(url);
+  };
+
+  // Vider la mémoire vive pour simuler un nouveau conteneur Render vierge
+  db.data.shows = {};
+  db.data.privateUsers = {};
+  assert.equal(db.getShowsList().length, 0);
+  assert.equal(db.getPrivateUsers().length, 0);
+
+  // Exécuter l'Auto-Hydration
+  const hydrateRes = await CloudSyncService.hydrateFromCloud(mockApi);
+  assert.equal(hydrateRes.success, true);
+  assert.ok(db.findShow("pekin express"), "La série doit être restaurée depuis le Cloud");
+  assert.equal(db.getPrivateUsers().some(u => u.userId === 998877), true, "Le membre privé doit être restauré depuis le Cloud");
+
+  // 5. Test des commandes d'administration Cloud
+  let statusReply = '';
+  const mockAdminCtx = {
+    from: { id: 778899, username: 'MonCreateurAdore' },
+    api: mockApi,
+    reply: async (text) => { statusReply = text; }
+  };
+
+  await PrivateAdminManager.storageStatusCommand(mockAdminCtx);
+  assert.ok(statusReply.includes('STOCKAGE PERSISTANT CLOUD'));
+  assert.ok(statusReply.includes('-100888777666'));
+
+  // Nettoyage
+  global.fetch = originalFetch;
+  db.removePrivateUser(998877);
+  db.removeShow("Pékin Express All Stars");
 });
 
 test.after(() => {

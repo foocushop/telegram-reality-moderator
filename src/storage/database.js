@@ -541,6 +541,7 @@ export class ModerationDatabase {
       userId,
       username: rawUsername,
       fullName,
+      isReachable: true,
       lastInteraction: new Date().toISOString()
     };
 
@@ -550,9 +551,43 @@ export class ModerationDatabase {
     return this.data.privateUsers[userId];
   }
 
-  getPrivateUsers() {
+  getPrivateUsers(onlyReachable = false) {
     if (!this.data.privateUsers) this.data.privateUsers = {};
-    return Object.values(this.data.privateUsers);
+    const all = Object.values(this.data.privateUsers);
+    if (onlyReachable) {
+      return all.filter(u => u.isReachable !== false);
+    }
+    return all;
+  }
+
+  markPrivateUserReachable(userId, isReachable = true, errorReason = null) {
+    if (!this.data.privateUsers || !userId) return;
+    const strId = String(userId);
+    const numId = Number(userId);
+    const target = this.data.privateUsers[strId] || this.data.privateUsers[numId];
+    if (target) {
+      target.isReachable = isReachable;
+      if (errorReason) target.lastError = errorReason;
+      target.lastCheckedAt = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  getStorageChatId() {
+    return process.env.STORAGE_CHAT_ID ||
+           process.env.BACKUP_CHANNEL_ID ||
+           this.data.storageChatId ||
+           this.data.auditChannelId ||
+           process.env.AUDIT_CHANNEL_ID ||
+           this.data.ownerId ||
+           (process.env.ADMIN_USER_IDS ? Number(process.env.ADMIN_USER_IDS.split(',')[0].trim()) : null);
+  }
+
+  setStorageChatId(chatId) {
+    if (!chatId) return false;
+    this.data.storageChatId = Number(chatId);
+    this.save();
+    return true;
   }
 
   removePrivateUser(userId) {
@@ -1000,6 +1035,10 @@ export class ModerationDatabase {
     return false;
   }
 
+  getShows() {
+    return this.data.shows || {};
+  }
+
   getShowsList() {
     return Object.values(this.data.shows || {}).sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -1031,6 +1070,56 @@ export class ModerationDatabase {
       }
     }
     return importedCount;
+  }
+
+  /**
+   * Exporte l'état complet du bot pour la persistance Cloud (utilisateurs, séries, configurations)
+   */
+  getFullState() {
+    return {
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      moderation_db: JSON.parse(JSON.stringify(this.data)),
+      shows_catalog: JSON.parse(JSON.stringify(this.getShows()))
+    };
+  }
+
+  /**
+   * Restaure l'état complet du bot depuis une sauvegarde Cloud (Cloud Sync)
+   */
+  restoreFullState(state) {
+    if (!state || typeof state !== 'object') return false;
+    let modified = false;
+
+    if (state.moderation_db && typeof state.moderation_db === 'object') {
+      const dbData = state.moderation_db;
+      this.data = {
+        ...this.data,
+        ...dbData,
+        shows: { ...(this.data.shows || {}), ...(dbData.shows || {}) },
+        knownUsers: { ...(this.data.knownUsers || {}), ...(dbData.knownUsers || {}) },
+        privateUsers: { ...(this.data.privateUsers || {}), ...(dbData.privateUsers || {}) },
+        usernameToId: { ...(this.data.usernameToId || {}), ...(dbData.usernameToId || {}) },
+        masters: Array.isArray(dbData.masters) && dbData.masters.length > 0 ? dbData.masters : this.data.masters,
+        managedChats: Array.isArray(dbData.managedChats) && dbData.managedChats.length > 0 ? dbData.managedChats : this.data.managedChats,
+        auditChannelId: dbData.auditChannelId || this.data.auditChannelId,
+        storageChatId: dbData.storageChatId || this.data.storageChatId,
+        ownerId: dbData.ownerId || this.data.ownerId,
+        mainGroupId: dbData.mainGroupId || this.data.mainGroupId
+      };
+      modified = true;
+    }
+
+    if (state.shows_catalog) {
+      this.importShows(state.shows_catalog);
+      modified = true;
+    }
+
+    if (modified) {
+      this.save();
+      this.saveShowsCatalog();
+    }
+    return modified;
   }
 
   findShow(query) {

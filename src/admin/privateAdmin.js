@@ -8,6 +8,7 @@ import { escapeHtml } from '../utils/format.js';
 import { geminiService } from '../ai/gemini.js';
 import { conversationSessions } from '../ai/conversationSession.js';
 import { AuditService } from '../services/auditService.js';
+import { CloudSyncService } from '../services/cloudSyncService.js';
 
 export class PrivateAdminManager {
   /**
@@ -335,6 +336,7 @@ export class PrivateAdminManager {
 
     const show = db.addShow(name, link, description);
     if (show) {
+      CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_added');
       await ctx.reply(
         `✅ <b>ÉMISSION AJOUTÉE AU CATALOGUE AVEC SUCCÈS !</b>\n\n` +
         `📺 <b>Nom :</b> ${escapeHtml(show.name)}\n` +
@@ -364,6 +366,7 @@ export class PrivateAdminManager {
 
     const success = db.removeShow(nameOrId.trim());
     if (success) {
+      CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_deleted');
       await ctx.reply(`✅ L'émission <b>${escapeHtml(nameOrId.trim())}</b> a été retirée du catalogue.`, { parse_mode: 'HTML' });
     } else {
       await ctx.reply(`❌ Aucune émission trouvée correspondant à <b>${escapeHtml(nameOrId.trim())}</b>. Tapez /shows pour voir la liste.`, { parse_mode: 'HTML' });
@@ -697,16 +700,29 @@ export class PrivateAdminManager {
       const content = await res.text();
       const parsed = JSON.parse(content);
 
-      const importedCount = db.importShows(parsed);
-      const totalShows = db.getShowsList().length;
+      let replyMsg = '';
+      if (parsed.moderation_db || parsed.shows_catalog) {
+        db.restoreFullState(parsed);
+        const totalShows = db.getShowsList().length;
+        const totalUsers = Object.keys(db.data.knownUsers || {}).length;
+        const privUsers = Object.keys(db.data.privateUsers || {}).length;
+        replyMsg =
+          `✅ <b>RESTAURATION COMPLÈTE DU BOT EFFECTUÉE !</b> 🚀\n\n` +
+          `👥 <b>${privUsers}</b> membre(s) privé(s) (<b>${totalUsers}</b> connus) restaurés.\n` +
+          `📺 <b>${totalShows}</b> émission(s) actives dans le catalogue.\n` +
+          `🛡️ <i>Toutes les données ont été réinjectées et synchronisées.</i>`;
+      } else {
+        const importedCount = db.importShows(parsed);
+        const totalShows = db.getShowsList().length;
+        replyMsg =
+          `✅ <b>IMPORTATION DU CATALOGUE RÉUSSIE !</b> 🎉\n\n` +
+          `📥 <b>${importedCount} émission(s)</b> importées ou mises à jour depuis votre fichier.\n` +
+          `📺 <b>Total actif dans le catalogue :</b> <b>${totalShows}</b> émission(s).\n\n` +
+          `Tapez <code>/shows</code> pour vérifier votre catalogue complet !`;
+      }
 
-      return ctx.reply(
-        `✅ <b>IMPORTATION DU CATALOGUE RÉUSSIE !</b> 🎉\n\n` +
-        `📥 <b>${importedCount} émission(s)</b> importées ou mises à jour depuis votre fichier.\n` +
-        `📺 <b>Total actif dans le catalogue :</b> <b>${totalShows}</b> émission(s).\n\n` +
-        `Tapez <code>/shows</code> pour vérifier votre catalogue complet !`,
-        { parse_mode: 'HTML' }
-      );
+      CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'file_imported');
+      return ctx.reply(replyMsg, { parse_mode: 'HTML' });
     } catch (err) {
       console.error('[ADMIN] Erreur import JSON:', err);
       return ctx.reply(`❌ <b>Erreur lors de l'importation du fichier JSON :</b> ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
@@ -1005,9 +1021,9 @@ export class PrivateAdminManager {
       await new Promise(r => setTimeout(r, 40));
     }
 
-    // Nettoyage automatique des utilisateurs qui ont bloqué le bot
+    // Marquage non destructif des utilisateurs inaccessibles (aucun compte n'est supprimé de la base !)
     if (blockedUserIds.length > 0) {
-      blockedUserIds.forEach(id => db.removePrivateUser(id));
+      blockedUserIds.forEach(id => db.markPrivateUserReachable(id, false, 'forbidden_or_blocked'));
     }
 
     const report =
@@ -1015,7 +1031,7 @@ export class PrivateAdminManager {
       `✅ <b>Distribués avec succès :</b> <b>${successCount}</b>\n` +
       `❌ <b>Échecs / Bloqués :</b> <b>${failCount}</b>\n` +
       `📊 <b>Total des membres ciblés :</b> <b>${privateUsers.length}</b>\n` +
-      (blockedUserIds.length > 0 ? `🧹 <i>${blockedUserIds.length} compte(s) inactifs ou bloqueurs retirés de la liste.</i>\n\n` : '\n') +
+      (blockedUserIds.length > 0 ? `🛡️ <i>${blockedUserIds.length} compte(s) temporairement inaccessibles (conservés en base).</i>\n\n` : '\n') +
       `💬 <b>Message diffusé :</b>\n<i>"${escapeHtml(cleanText.slice(0, 300))}${cleanText.length > 300 ? '...' : ''}"</i>`;
 
     try {
@@ -1327,6 +1343,144 @@ export class PrivateAdminManager {
       "💡 Les échanges privés continueront d'apparaître normalement dans vos logs Render.",
       { parse_mode: 'HTML' }
     );
+  }
+
+  /**
+   * Définit explicitement le canal ou chat de stockage persistant Cloud
+   */
+  static async setStorageCommand(ctx, input) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const cleanInput = (input || '').trim();
+    if (!cleanInput) {
+      const current = CloudSyncService.getStorageChatId();
+      return ctx.reply(
+        `☁️ <b>CONFIGURATION DU STOCKAGE CLOUD PERSISTANT</b>\n\n` +
+        `• <b>Chat/Canal actuel :</b> <code>${current || 'Non configuré'}</code>\n\n` +
+        `📝 <b>Utilisation :</b>\n` +
+        `<code>/setstorage -100xxxxxxxxxx</code>\n\n` +
+        `💡 <i>Ce canal sert de base de données Cloud : le bot y publie et épingle ses instantanés JSON. Au démarrage sur Render, il y télécharge automatiquement toutes vos données pour ne jamais rien perdre !</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    try {
+      const chat = await ctx.api.getChat(cleanInput);
+      if (!chat) {
+        return ctx.reply(`❌ Impossible de trouver le chat "${cleanInput}".`);
+      }
+
+      db.setStorageChatId(chat.id);
+
+      // Tester immédiatement l'envoi et l'épinglage d'un backup
+      const res = await CloudSyncService.saveToCloud(ctx.api, 'manual_setup');
+      if (res.success) {
+        return ctx.reply(
+          `✅ <b>Canal de stockage Cloud configuré et actif !</b> ☁️🎉\n\n` +
+          `• <b>Titre :</b> ${escapeHtml(chat.title || cleanInput)}\n` +
+          `• <b>ID :</b> <code>${chat.id}</code>\n\n` +
+          `📦 <b>Instantané complet épinglé avec succès !</b>\n` +
+          `🛡️ <i>Vos utilisateurs, séries et paramètres seront désormais automatiquement restaurés à chaque nouveau déploiement sur Render !</i>`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        return ctx.reply(
+          `⚠️ <b>Canal enregistré mais échec du test d'écriture :</b>\n\n` +
+          `<code>${escapeHtml(res.error || res.reason)}</code>\n\n` +
+          `👉 <i>Vérifiez que le bot est bien administrateur du canal avec le droit de publier et d'épingler des messages.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    } catch (err) {
+      return ctx.reply(`❌ Erreur configuration stockage : ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+    }
+  }
+
+  /**
+   * Force une synchronisation Cloud immédiate vers Telegram
+   */
+  static async syncCloudCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const res = await CloudSyncService.saveToCloud(ctx.api, 'admin_manual');
+    if (res.success) {
+      return ctx.reply(
+        `☁️ <b>SYNCHRONISATION CLOUD RÉUSSIE !</b> 🚀\n\n` +
+        `👥 Membres privés sauvegardés : <b>${res.meta.privateUsersCount}</b> (${res.meta.knownUsersCount} connus)\n` +
+        `🎬 Séries sauvegardées : <b>${res.meta.showsCount}</b>\n` +
+        `👑 Maîtres sauvegardés : <b>${res.meta.mastersCount}</b>\n` +
+        `📌 Instantané épinglé dans : <code>${CloudSyncService.getStorageChatId()}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      return ctx.reply(
+        `❌ <b>Échec de la sauvegarde Cloud :</b>\n\n` +
+        `<code>${escapeHtml(res.error || res.reason)}</code>\n\n` +
+        `👉 <i>Définissez d'abord un canal avec <code>/setstorage [ID]</code> ou <code>/setaudit [ID]</code>.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  }
+
+  /**
+   * Force une restauration immédiate depuis Telegram Cloud
+   */
+  static async restoreCloudCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const res = await CloudSyncService.hydrateFromCloud(ctx.api);
+    if (res.success) {
+      return ctx.reply(
+        `🚀 <b>RESTAURATION CLOUD EFFECTUÉE AVEC SUCCÈS !</b>\n\n` +
+        `👥 Membres privés restaurés : <b>${res.usersCount}</b>\n` +
+        `🎬 Séries restaurées : <b>${res.showsCount}</b>\n\n` +
+        `✅ <i>La base locale a été mise à jour depuis l'instantané Telegram Cloud !</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      return ctx.reply(
+        `❌ <b>Impossible de restaurer depuis Telegram Cloud :</b>\n\n` +
+        `<code>${escapeHtml(res.error || res.reason)}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  }
+
+  /**
+   * Affiche l'état du système de persistance Cloud
+   */
+  static async storageStatusCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const storageId = CloudSyncService.getStorageChatId();
+    const privCount = db.getPrivateUsers().length;
+    const knownCount = Object.keys(db.data.knownUsers || {}).length;
+    const showsCount = db.getShowsList().length;
+
+    let text =
+      `☁️ <b>ÉTAT DU STOCKAGE PERSISTANT CLOUD</b>\n\n` +
+      `📡 <b>Canal de persistance :</b> <code>${storageId || 'Non configuré'}</code>\n` +
+      `👥 <b>Membres en mémoire :</b> <b>${privCount}</b> privés (<b>${knownCount}</b> connus)\n` +
+      `📺 <b>Séries en mémoire :</b> <b>${showsCount}</b>\n` +
+      `🕒 <b>Dernière synchronisation :</b> <code>${CloudSyncService.lastCloudSyncAt || 'En attente'}</code>\n\n` +
+      `💡 <b>Commandes utiles :</b>\n` +
+      `• <code>/synccloud</code> : Sauvegarder immédiatement sur le Cloud\n` +
+      `• <code>/restorecloud</code> : Recharger manuellement depuis le Cloud\n` +
+      `• <code>/setstorage [ID]</code> : Modifier le canal de stockage`;
+
+    return ctx.reply(text, { parse_mode: 'HTML' });
   }
 
   /**

@@ -9,6 +9,7 @@ import { geminiService } from './ai/gemini.js';
 import { resolveTarget } from './utils/resolver.js';
 import { PrivateAdminManager } from './admin/privateAdmin.js';
 import { MemberCatalogService } from './services/memberCatalogService.js';
+import { CloudSyncService } from './services/cloudSyncService.js';
 
 async function bootstrap() {
   console.log('====================================================');
@@ -31,6 +32,16 @@ async function bootstrap() {
   } catch (err) {
     console.error('❌ Impossible de se connecter aux serveurs de Telegram avec ce token :', err.message);
     process.exit(1);
+  }
+
+  // --- Restauration Automatique Cloud Telegram (Indestructible face aux redéploiements Render) ---
+  try {
+    const syncRes = await CloudSyncService.hydrateFromCloud(bot.api);
+    if (syncRes && syncRes.success) {
+      console.log(`[BOOTSTRAP] ☁️ Persistance Cloud active : base rechargée automatiquement.`);
+    }
+  } catch (syncErr) {
+    console.warn('[BOOTSTRAP] ⚠️ Impossible d\'exécuter l\'auto-hydration Cloud :', syncErr.message);
   }
 
   // --- Gestion globale des erreurs ---
@@ -67,7 +78,10 @@ async function bootstrap() {
   // /start (Distinction automatique entre MP privé admin, MP privé membre et groupe public)
   bot.command('start', async (ctx) => {
     if (ctx.chat?.type === 'private') {
-      if (ctx.from) db.savePrivateUser(ctx.from);
+      if (ctx.from) {
+        db.savePrivateUser(ctx.from);
+        CloudSyncService.triggerDebouncedSave(ctx.api, 30000, 'user_start');
+      }
       if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
         return PrivateAdminManager.sendDashboard(ctx);
       }
@@ -212,6 +226,35 @@ async function bootstrap() {
   bot.command('unsetaudit', async (ctx) => {
     if (ctx.chat?.type === 'private') {
       return PrivateAdminManager.unsetAuditChannelCommand(ctx);
+    }
+  });
+
+  // /setstorage ou /setbackup pour configurer le canal de stockage persistant Cloud
+  bot.command(['setstorage', 'setbackup'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(setstorage|setbackup)\s*/i, '').trim();
+      return PrivateAdminManager.setStorageCommand(ctx, args);
+    }
+  });
+
+  // /synccloud ou /cloudsync pour forcer une sauvegarde Cloud immédiate
+  bot.command(['synccloud', 'cloudsync'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.syncCloudCommand(ctx);
+    }
+  });
+
+  // /restorecloud pour restaurer immédiatement depuis Telegram Cloud
+  bot.command('restorecloud', async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.restoreCloudCommand(ctx);
+    }
+  });
+
+  // /storage pour afficher le statut du stockage persistant
+  bot.command('storage', async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.storageStatusCommand(ctx);
     }
   });
 
@@ -592,6 +635,7 @@ async function bootstrap() {
       // Enregistrer systématiquement l'utilisateur privé
       if (ctx.from) {
         db.savePrivateUser(ctx.from);
+        CloudSyncService.triggerDebouncedSave(ctx.api, 30000, 'private_user_activity');
       }
 
       // Si l'administrateur envoie un document JSON pour importation de catalogue
