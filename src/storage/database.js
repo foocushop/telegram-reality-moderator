@@ -105,6 +105,11 @@ export class ModerationDatabase {
       if (!Array.isArray(this.data.managedChats)) this.data.managedChats = [];
       if (!this.data.privateUsers || typeof this.data.privateUsers !== 'object') this.data.privateUsers = {};
 
+      // Synchronisation initiale automatique : si privateUsers est vide mais que knownUsers a des membres
+      if (Object.keys(this.data.privateUsers).length === 0 && this.data.knownUsers && Object.keys(this.data.knownUsers).length > 0) {
+        this.syncKnownUsersToPrivate();
+      }
+
       // Migration automatique : si masters est vide mais qu'un master historique existe
       if (this.data.masters.length === 0 && (this.data.masterUsername || this.data.masterId)) {
         this.data.masters.push({
@@ -507,6 +512,12 @@ export class ModerationDatabase {
       }
     }
 
+    for (const [id, u] of Object.entries(this.data.privateUsers || {})) {
+      if (u.username && u.username.toLowerCase().replace(/^@/, '').trim() === clean) {
+        return Number(id);
+      }
+    }
+
     return null;
   }
 
@@ -559,6 +570,33 @@ export class ModerationDatabase {
     }
     if (deleted) this.save();
     return deleted;
+  }
+
+  /**
+   * Synchronise les utilisateurs historiques connus vers la liste d'envoi privé
+   */
+  syncKnownUsersToPrivate() {
+    if (!this.data.privateUsers) this.data.privateUsers = {};
+    let addedCount = 0;
+    for (const [userId, user] of Object.entries(this.data.knownUsers || {})) {
+      const strId = String(userId);
+      const numId = Number(userId);
+      if (!this.data.privateUsers[strId] && !this.data.privateUsers[numId]) {
+        this.data.privateUsers[strId] = {
+          userId: numId,
+          username: user.username || '',
+          fullName: user.fullName || 'Utilisateur',
+          lastInteraction: user.lastSeen || new Date().toISOString(),
+          fromSync: true
+        };
+        addedCount++;
+      }
+    }
+    if (addedCount > 0) {
+      this.save();
+      console.log(`[DATABASE] 👥 ${addedCount} utilisateur(s) historique(s) synchronisé(s) vers les destinataires privés.`);
+    }
+    return addedCount;
   }
 
   getStats() {

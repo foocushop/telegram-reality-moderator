@@ -155,6 +155,13 @@ async function bootstrap() {
     }
   });
 
+  // /sync_users ou /syncusers pour synchroniser manuellement les utilisateurs connus vers la liste d'envoi privé
+  bot.command(['sync_users', 'syncusers'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.syncUsersCommand(ctx);
+    }
+  });
+
   // /send, /dm ou /msg pour envoyer un message ciblé à un membre précis par son @username ou ID
   bot.command(['send', 'dm', 'msg'], async (ctx) => {
     if (ctx.chat?.type === 'private') {

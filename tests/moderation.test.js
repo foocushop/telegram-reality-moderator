@@ -1031,9 +1031,23 @@ test('Gestion des Utilisateurs Privés, Envoi Ciblé (/send) et Broadcast Utilis
   assert.equal(importedCount, 1);
   assert.ok(db.findShow("koh lanta"));
 
+  // 7. Test Synchronisation des membres historiques (/sync_users)
+  db.saveUser(444004, { username: 'AncienMembre', fullName: 'Ancien Membre' });
+  const initialPrivCount = db.getPrivateUsers().length;
+  let syncReply = '';
+  const mockSyncCtx = {
+    from: { id: 778899, username: 'MonCreateurAdore' },
+    reply: async (text) => { syncReply = text; }
+  };
+  await PrivateAdminManager.syncUsersCommand(mockSyncCtx);
+  assert.ok(syncReply.includes('SYNCHRONISATION'));
+  assert.ok(db.getPrivateUsers().some(u => u.userId === 444004), "L'ancien membre doit être dans privateUsers après sync");
+  assert.ok(db.getPrivateUsers().length > initialPrivCount);
+
   // Nettoyage
   db.removePrivateUser(111001);
   db.removePrivateUser(222002);
+  db.removePrivateUser(444004);
   db.removeShow("Koh Lanta Saison 25");
 });
 

@@ -966,7 +966,7 @@ export class PrivateAdminManager {
         `👥 Utilisateurs enregistrés éligibles : <b>${privateUsersCount}</b>\n\n` +
         `📝 <b>Utilisation :</b>\n` +
         `<code>/broadcast_users Votre annonce ici...</code>\n\n` +
-        `💡 <i>Chaque membre recevra ce message directement dans sa boîte privée avec Léna.</i>`,
+        `💡 <i>Chaque membre recevra ce message directement dans sa boîte privée avec Léna. Tapez <code>/sync_users</code> pour synchroniser aussi les anciens membres connus du groupe.</i>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -1023,6 +1023,27 @@ export class PrivateAdminManager {
     } catch {}
 
     return ctx.reply(report, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Synchronise manuellement les utilisateurs connus du groupe vers la liste d'envoi privé
+   */
+  static async syncUsersCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const added = db.syncKnownUsersToPrivate();
+    const total = db.getPrivateUsers().length;
+
+    return ctx.reply(
+      `🔄 <b>SYNCHRONISATION DES MEMBRES HISTORIQUES</b>\n\n` +
+      `✅ <b>${added}</b> nouvel(s) utilisateur(s) synchronisé(s) !\n` +
+      `👥 Total des destinataires éligibles : <b>${total}</b>\n\n` +
+      `💡 <i>Lors du prochain <code>/broadcast_users</code>, le bot tentera également de leur délivrer le message. Ceux qui n'ont jamais ouvert le bot en privé ou qui l'ont bloqué seront automatiquement nettoyés sans bloquer la diffusion.</i>`,
+      { parse_mode: 'HTML' }
+    );
   }
 
   /**
