@@ -10,6 +10,7 @@ import { resolveTarget } from './utils/resolver.js';
 import { PrivateAdminManager } from './admin/privateAdmin.js';
 import { MemberCatalogService } from './services/memberCatalogService.js';
 import { CloudSyncService } from './services/cloudSyncService.js';
+import { AuditRecoveryService } from './services/auditRecoveryService.js';
 
 async function bootstrap() {
   console.log('====================================================');
@@ -255,6 +256,27 @@ async function bootstrap() {
   bot.command('storage', async (ctx) => {
     if (ctx.chat?.type === 'private') {
       return PrivateAdminManager.storageStatusCommand(ctx);
+    }
+  });
+
+  // /recover_users ou /recupusers pour récupérer les membres depuis l'audit
+  bot.command(['recover_users', 'recoverusers', 'recupusers', 'recup_membres'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(recover_users|recoverusers|recupusers|recup_membres)\s*/i, '').trim();
+      if (args) {
+        const found = AuditRecoveryService.parseUsers(args);
+        if (found.length > 0) {
+          const res = await AuditRecoveryService.injectRecoveredUsers(found, ctx.api);
+          return ctx.reply(
+            `🎉 <b>RÉCUPÉRATION EFFECTUÉE !</b> 👥\n\n` +
+            `📥 <b>${res.injectedCount}</b> membre(s) historique(s) identifié(s) et injecté(s) dans la base.\n` +
+            `📈 <b>Total membres privés :</b> <b>${res.totalUsers}</b>\n` +
+            `☁️ <i>Sauvegarde Cloud mise à jour et automatiquement épinglée !</i>`,
+            { parse_mode: 'HTML' }
+          );
+        }
+      }
+      return PrivateAdminManager.recoverAuditUsersCommand(ctx);
     }
   });
 
@@ -638,10 +660,10 @@ async function bootstrap() {
         CloudSyncService.triggerDebouncedSave(ctx.api, 30000, 'private_user_activity');
       }
 
-      // Si l'administrateur envoie un document JSON pour importation de catalogue
-      if (ctx.message?.document && ctx.message.document.file_name?.toLowerCase().endsWith('.json')) {
+      // Si l'administrateur envoie un document (JSON, TXT, HTML, LOG)
+      if (ctx.message?.document) {
         if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
-          return PrivateAdminManager.handleJsonFileImport(ctx);
+          return PrivateAdminManager.handleFileImport(ctx);
         }
       }
 
@@ -649,7 +671,34 @@ async function bootstrap() {
       const forwardedChat = ctx.message.forward_from_chat;
       if (forwardedChat && forwardedChat.type === 'channel') {
         if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
+          // Vérifier d'abord si c'est un message d'audit transféré
+          const recovered = AuditRecoveryService.parseUsers(text);
+          if (recovered.length > 0) {
+            const injectRes = await AuditRecoveryService.injectRecoveredUsers(recovered, ctx.api);
+            return ctx.reply(
+              `📥 <b>Membres d'audit récupérés !</b> 👥\n\n` +
+              `• <b>${recovered.length}</b> utilisateur(s) extrait(s) de ce transfert.\n` +
+              `• 📈 Total membres privés enregistrés : <b>${injectRes.totalUsers}</b>\n` +
+              `• ☁️ Sauvegarde Cloud actualisée et épinglée.`,
+              { parse_mode: 'HTML' }
+            );
+          }
           return PrivateAdminManager.addChannelManually(ctx, String(forwardedChat.id));
+        }
+      }
+
+      // Détection de logs d'audit collés directement en texte
+      if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id) && !text.startsWith('/')) {
+        const recoveredFromText = AuditRecoveryService.parseUsers(text);
+        if (recoveredFromText.length > 0 && (text.includes('AUDIT') || text.includes('Membre :') || text.includes('[ID:'))) {
+          const injectRes = await AuditRecoveryService.injectRecoveredUsers(recoveredFromText, ctx.api);
+          return ctx.reply(
+            `🎉 <b>RÉCUPÉRATION EFFECTUÉE !</b> 👥\n\n` +
+            `📥 <b>${recoveredFromText.length}</b> membre(s) historique(s) extrait(s) et injecté(s) dans la base.\n` +
+            `📈 <b>Total membres privés :</b> <b>${injectRes.totalUsers}</b>\n` +
+            `☁️ <i>Nouvelle sauvegarde Cloud générée et automatiquement épinglée dans votre canal de persistance !</i>`,
+            { parse_mode: 'HTML' }
+          );
         }
       }
 

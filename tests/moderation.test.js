@@ -13,6 +13,7 @@ import { ImageScanner } from '../src/moderation/imageScanner.js';
 import { geminiService } from '../src/ai/gemini.js';
 import { PrivateAdminManager } from '../src/admin/privateAdmin.js';
 import { CloudSyncService } from '../src/services/cloudSyncService.js';
+import { AuditRecoveryService } from '../src/services/auditRecoveryService.js';
 
 test('Normalisation de texte anti-contournement', () => {
   assert.equal(normalizeText('Puuuutain !'), 'puutain !');
@@ -1146,6 +1147,114 @@ test('CloudSyncService : Sauvegarde d\'état persistante et Auto-Hydration Cloud
   global.fetch = originalFetch;
   db.removePrivateUser(998877);
   db.removeShow("Pékin Express All Stars");
+});
+
+test('AuditRecoveryService : Extraction, Réinjection et Cloud Sync des utilisateurs historiques', async () => {
+  // 1. Test extraction depuis message d'audit Telegram standard (avec et sans HTML)
+  const auditSample = `
+🕵️ <b>[AUDIT CHAT PRIVÉ]</b>
+
+👤 <b>Membre :</b> <b>Thomas Vache</b> (@thomasv | <code>55667788</code>)
+🕒 <b>Date :</b> 11/09/2026 à 10:00:00
+
+📥 <b>Message reçu :</b>
+<i>"Donne-moi le lien des Marseillais stp"</i>
+
+🤖 <b>Réponse de Léna :</b>
+<i>"Voici le lien..."</i>
+
+───────────────────────────────────
+🕵️ [AUDIT CHAT PRIVÉ]
+
+👤 Membre : Julie SansArobase (99112233)
+🕒 Date : 11/09/2026 à 10:05:00
+`;
+
+  const parsedFromText = AuditRecoveryService.parseUsers(auditSample);
+  assert.equal(parsedFromText.length, 2);
+  assert.equal(parsedFromText[0].userId, 55667788);
+  assert.equal(parsedFromText[0].username, 'thomasv');
+  assert.equal(parsedFromText[0].fullName, 'Thomas Vache');
+  assert.equal(parsedFromText[1].userId, 99112233);
+  assert.equal(parsedFromText[1].username, '');
+  assert.equal(parsedFromText[1].fullName, 'Julie SansArobase');
+
+  // 2. Test extraction depuis Render console logs
+  const renderLogSample = `
+═══════════════════════════════════════════════════════════════════
+📩 [AUDIT CHAT PRIVÉ - MEMBRE] NOUVEAU MESSAGE REÇU
+👤 De           : @sarah_croche (Sarah) [ID: 77881122]
+🕒 Horodatage   : 11/09/2026 à 12:00:00
+💬 Message reçu : "Coucou"
+`;
+  const parsedFromLogs = AuditRecoveryService.parseUsers(renderLogSample);
+  assert.equal(parsedFromLogs.length, 1);
+  assert.equal(parsedFromLogs[0].userId, 77881122);
+  assert.equal(parsedFromLogs[0].username, 'sarah_croche');
+  assert.equal(parsedFromLogs[0].fullName, 'Sarah');
+
+  // 3. Test extraction depuis export Telegram Desktop JSON (result.json)
+  const telegramDesktopJson = {
+    name: "Canal Audit",
+    type: "channel",
+    id: -100999888,
+    messages: [
+      {
+        id: 1,
+        text: "Membre : Kevin Guedj (@kevinguedj | 44556677)"
+      },
+      {
+        id: 2,
+        from_id: "user123987",
+        from: "Alexandre",
+        text: "Simple message"
+      }
+    ]
+  };
+
+  const parsedFromJson = AuditRecoveryService.parseUsers(telegramDesktopJson);
+  assert.equal(parsedFromJson.some(u => u.userId === 44556677), true);
+  assert.equal(parsedFromJson.some(u => u.userId === 123987), true);
+
+  // 4. Test injection dans la base et persistance Cloud
+  let pinnedMessageId = null;
+  let sentDocument = null;
+  const mockApi = {
+    getChat: async (id) => ({ id, title: 'Canal Audit Storage' }),
+    sendDocument: async (chatId, doc, opts) => {
+      sentDocument = { chatId, doc, opts };
+      return { message_id: 889900 };
+    },
+    pinChatMessage: async (chatId, msgId) => {
+      pinnedMessageId = msgId;
+      return true;
+    }
+  };
+
+  db.setStorageChatId('-100888777666');
+  const injectRes = await AuditRecoveryService.injectRecoveredUsers(parsedFromText, mockApi);
+  assert.equal(injectRes.injectedCount, 2);
+  assert.equal(db.isPrivateUser(55667788), true);
+  assert.equal(db.isPrivateUser(99112233), true);
+  assert.equal(pinnedMessageId, 889900, "Le nouvel instantané Cloud doit être épinglé après réinjection");
+
+  // 5. Test de la commande d'affichage du guide dans le panneau admin
+  let replyText = '';
+  const mockCtx = {
+    from: { id: 778899, username: 'MonCreateurAdore' },
+    reply: async (txt) => { replyText = txt; }
+  };
+  await PrivateAdminManager.recoverAuditUsersCommand(mockCtx);
+  assert.ok(replyText.includes("RÉCUPÉRATION DES MEMBRES DEPUIS L'AUDIT"));
+  assert.ok(replyText.includes("Transfert direct de messages"));
+  assert.ok(replyText.includes("result.json"));
+
+  // Nettoyage
+  db.removePrivateUser(55667788);
+  db.removePrivateUser(99112233);
+  db.removePrivateUser(77881122);
+  db.removePrivateUser(44556677);
+  db.removePrivateUser(123987);
 });
 
 test.after(() => {

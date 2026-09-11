@@ -560,6 +560,11 @@ export class ModerationDatabase {
     return all;
   }
 
+  isPrivateUser(userId) {
+    if (!userId || !this.data.privateUsers) return false;
+    return Boolean(this.data.privateUsers[String(userId)] || this.data.privateUsers[Number(userId)]);
+  }
+
   markPrivateUserReachable(userId, isReachable = true, errorReason = null) {
     if (!this.data.privateUsers || !userId) return;
     const strId = String(userId);

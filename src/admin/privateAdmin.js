@@ -9,6 +9,7 @@ import { geminiService } from '../ai/gemini.js';
 import { conversationSessions } from '../ai/conversationSession.js';
 import { AuditService } from '../services/auditService.js';
 import { CloudSyncService } from '../services/cloudSyncService.js';
+import { AuditRecoveryService } from '../services/auditRecoveryService.js';
 
 export class PrivateAdminManager {
   /**
@@ -36,13 +37,12 @@ export class PrivateAdminManager {
       .text("📊 Statistiques", "p_stats")
       .text("📝 Contexte / Consignes", "p_context").row()
       .text("📺 Séries & Liens", "p_shows")
-      .text("💾 Sauvegardes", "p_backup").row()
-      .text(`📡 Canaux & Groupes (${chatsCount})`, "p_channels")
+      .text("💾 Sauvegardes & Cloud", "p_backup").row()
+      .text("📥 Récupérer Membres Audit", "p_recover_audit")
       .text("📢 Faire une Annonce", "p_broadcast_info").row()
-      .text("🛡️ Sécurité & Filtres", "p_security")
-      .text("👑 Gérer les Maîtres", "p_masters").row()
-      .text("🚫 Liste des Bannis", "p_bans")
-      .text("🔇 Liste des Mutes", "p_mutes").row()
+      .text(`📡 Canaux & Groupes (${chatsCount})`, "p_channels")
+      .text("🛡️ Sécurité & Filtres", "p_security").row()
+      .text("👑 Gérer les Maîtres", "p_masters")
       .text("🔄 Recharger", "p_reload");
   }
 
@@ -270,6 +270,16 @@ export class PrivateAdminManager {
 
       case 'p_backup': {
         await this.handleBackup(ctx);
+        break;
+      }
+
+      case 'p_recover_audit': {
+        await this.recoverAuditUsersCommand(ctx);
+        break;
+      }
+
+      case 'p_synccloud': {
+        await this.syncCloudCommand(ctx);
         break;
       }
 
@@ -680,16 +690,20 @@ export class PrivateAdminManager {
   }
 
   /**
-   * Importe un fichier de sauvegarde JSON envoyé par l'administrateur
+   * Importe un fichier de sauvegarde, catalogue ou export d'audit (JSON, TXT, HTML, LOG)
    */
-  static async handleJsonFileImport(ctx) {
+  static async handleFileImport(ctx) {
     const userId = ctx.from?.id;
     if (!this.isAuthorized(ctx.from || userId)) {
       return ctx.reply("⛔ Accès réservé aux administrateurs.");
     }
 
     const doc = ctx.message?.document;
-    if (!doc || !doc.file_name?.toLowerCase().endsWith('.json')) {
+    if (!doc) return;
+
+    const fileName = doc.file_name?.toLowerCase() || '';
+    const isSupported = /\.(json|txt|html|htm|log|csv)$/i.test(fileName);
+    if (!isSupported) {
       return;
     }
 
@@ -698,35 +712,71 @@ export class PrivateAdminManager {
       const fileUrl = `https://api.telegram.org/file/bot${config.telegramToken}/${file.file_path}`;
       const res = await fetch(fileUrl);
       const content = await res.text();
-      const parsed = JSON.parse(content);
 
-      let replyMsg = '';
-      if (parsed.moderation_db || parsed.shows_catalog) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(content);
+      } catch (e) {
+        // Contenu non JSON brut (TXT, HTML, LOG)
+      }
+
+      // 1. Instantané de sauvegarde d'état global (Cloud Snapshot ou full backup)
+      if (parsed && (parsed.moderation_db || parsed.shows_catalog)) {
         db.restoreFullState(parsed);
         const totalShows = db.getShowsList().length;
         const totalUsers = Object.keys(db.data.knownUsers || {}).length;
         const privUsers = Object.keys(db.data.privateUsers || {}).length;
-        replyMsg =
+        CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'file_imported');
+        return ctx.reply(
           `✅ <b>RESTAURATION COMPLÈTE DU BOT EFFECTUÉE !</b> 🚀\n\n` +
           `👥 <b>${privUsers}</b> membre(s) privé(s) (<b>${totalUsers}</b> connus) restaurés.\n` +
           `📺 <b>${totalShows}</b> émission(s) actives dans le catalogue.\n` +
-          `🛡️ <i>Toutes les données ont été réinjectées et synchronisées.</i>`;
-      } else {
+          `🛡️ <i>Toutes les données ont été réinjectées et synchronisées.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      // 2. Récupération d'utilisateurs depuis l'audit (export Telegram Desktop result.json, texte, logs)
+      const recoveredUsers = AuditRecoveryService.parseUsers(parsed || content);
+      if (recoveredUsers.length > 0 && (!Array.isArray(parsed) || !parsed[0]?.link)) {
+        const injectRes = await AuditRecoveryService.injectRecoveredUsers(recoveredUsers, ctx.api);
+        return ctx.reply(
+          `🎉 <b>RÉCUPÉRATION DES MEMBRES DE L'AUDIT RÉUSSIE !</b> 👥\n\n` +
+          `📥 <b>${injectRes.injectedCount}</b> utilisateur(s) historique(s) identifié(s) et injecté(s) dans la base.\n` +
+          `📈 <b>Total membres privés actifs :</b> <b>${injectRes.totalUsers}</b> membre(s)\n` +
+          `☁️ <b>Persistance Cloud :</b> Une nouvelle sauvegarde complète a été générée et <b>automatiquement épinglée</b> dans votre canal de stockage !\n\n` +
+          `💡 <i>Vous pouvez désormais leur envoyer des annonces avec <code>/broadcast_users</code> ou des messages individuels avec <code>/send @pseudo</code>.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      // 3. Importation d'un catalogue de séries JSON
+      if (parsed) {
         const importedCount = db.importShows(parsed);
         const totalShows = db.getShowsList().length;
-        replyMsg =
+        CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'file_imported');
+        return ctx.reply(
           `✅ <b>IMPORTATION DU CATALOGUE RÉUSSIE !</b> 🎉\n\n` +
           `📥 <b>${importedCount} émission(s)</b> importées ou mises à jour depuis votre fichier.\n` +
           `📺 <b>Total actif dans le catalogue :</b> <b>${totalShows}</b> émission(s).\n\n` +
-          `Tapez <code>/shows</code> pour vérifier votre catalogue complet !`;
+          `Tapez <code>/shows</code> pour vérifier votre catalogue complet !`,
+          { parse_mode: 'HTML' }
+        );
       }
 
-      CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'file_imported');
-      return ctx.reply(replyMsg, { parse_mode: 'HTML' });
+      return ctx.reply(
+        `⚠️ Le fichier a bien été reçu, mais aucun utilisateur d'audit ni catalogue de séries n'a pu être extrait. Vérifiez son format (export Telegram Desktop JSON, TXT ou HTML).`,
+        { parse_mode: 'HTML' }
+      );
     } catch (err) {
-      console.error('[ADMIN] Erreur import JSON:', err);
-      return ctx.reply(`❌ <b>Erreur lors de l'importation du fichier JSON :</b> ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+      console.error('[ADMIN] Erreur import fichier:', err);
+      return ctx.reply(`❌ <b>Erreur lors de l'importation du fichier :</b> ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
     }
+  }
+
+  // Rétro-compatibilité
+  static async handleJsonFileImport(ctx) {
+    return this.handleFileImport(ctx);
   }
 
   /**
@@ -1481,6 +1531,49 @@ export class PrivateAdminManager {
       `• <code>/setstorage [ID]</code> : Modifier le canal de stockage`;
 
     return ctx.reply(text, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Commande et guide de récupération des membres historiques depuis le canal d'audit
+   */
+  static async recoverAuditUsersCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const currentUsers = db.getPrivateUsers().length;
+    const knownUsers = Object.keys(db.data.knownUsers || {}).length;
+    const auditChannelId = db.getEffectiveAuditChannelId();
+
+    let text =
+      `📥 <b>RÉCUPÉRATION DES MEMBRES DEPUIS L'AUDIT</b> 👥\n\n` +
+      `Cette fonction analyse l'historique de votre canal d'audit pour réinjecter TOUS les membres qui ont interagi avec le bot depuis le début, régénérer une sauvegarde Cloud complète et l'épingler !\n\n` +
+      `📊 <b>État actuel en base :</b>\n` +
+      `• Membres privés enregistrés : <b>${currentUsers}</b>\n` +
+      `• Total profils connus : <b>${knownUsers}</b>\n` +
+      (auditChannelId ? `• Canal d'audit connecté : <code>${auditChannelId}</code>\n\n` : `• Canal d'audit : <i>Non configuré (tapez /setaudit)</i>\n\n`) +
+      `✨ <b>3 méthodes simples au choix pour récupérer vos membres :</b>\n\n` +
+      `1️⃣ <b>Méthode 1 : Transfert direct de messages (Mobile / PC)</b>\n` +
+      `• Ouvrez votre canal d'audit sur Telegram.\n` +
+      `• Sélectionnez vos messages d'audit (jusqu'à 100 d'un coup).\n` +
+      `• <b>Transférez-les (Forward)</b> directement ici au bot en privé !\n` +
+      `<i>Le bot lira automatiquement les pseudos et IDs, les injectera et épinglera la sauvegarde.</i>\n\n` +
+      `2️⃣ <b>Méthode 2 : Export de chat Telegram Desktop (Recommandé si vous en avez beaucoup)</b>\n` +
+      `• Sur Telegram Desktop (sur PC), ouvrez votre canal d'audit.\n` +
+      `• Cliquez sur les <b>3 points ➔ Exporter l'historique du chat</b>.\n` +
+      `• Sélectionnez le format <b>JSON</b> (ou texte) et exportez.\n` +
+      `• <b>Glissez-déposez le fichier <code>result.json</code> ici au bot !</b>\n` +
+      `<i>Le bot scannera tout le fichier en 1 seconde et restaurera 100% de vos membres historiques.</i>\n\n` +
+      `3️⃣ <b>Méthode 3 : Copier-Coller direct</b>\n` +
+      `• Copiez du texte ou des logs contenant les lignes <code>Membre : Nom (@pseudo | ID)</code> ou <code>[ID: 123456]</code> et collez-les ici au bot !\n\n` +
+      `💡 <i>Dès qu'un membre est détecté, il est sauvegardé et disponible immédiatement pour les annonces <code>/broadcast_users</code> et messages ciblés <code>/send</code> !</i>`;
+
+    const keyboard = new InlineKeyboard()
+      .text("💾 Forcer Sauvegarde Cloud", "p_synccloud").row()
+      .text("🔙 Retour au Panneau", "p_main_menu");
+
+    return ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
   }
 
   /**
