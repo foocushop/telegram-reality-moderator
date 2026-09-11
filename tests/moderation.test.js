@@ -939,6 +939,104 @@ test('AuditService : Enregistrement console et relais direct vers le canal Teleg
   assert.equal(db.getAuditChannelId(), null);
 });
 
+test('Gestion des Utilisateurs Privés, Envoi Ciblé (/send) et Broadcast Utilisateurs (/broadcast_users)', async () => {
+  const { PrivateAdminManager } = await import('../src/admin/privateAdmin.js');
+
+  // 1. Enregistrement d'utilisateurs privés
+  const u1 = db.savePrivateUser({ id: 111001, username: 'AliceTv', first_name: 'Alice' });
+  const u2 = db.savePrivateUser({ id: 222002, username: 'BobTv', first_name: 'Bob' });
+  const u3 = db.savePrivateUser({ id: 333003, username: 'CharlieTv', first_name: 'Charlie' });
+
+  assert.equal(u1.userId, 111001);
+  assert.equal(u1.username, 'AliceTv');
+
+  const privateList = db.getPrivateUsers();
+  assert.ok(privateList.some(u => u.userId === 111001));
+  assert.ok(privateList.some(u => u.userId === 222002));
+  assert.ok(privateList.some(u => u.userId === 333003));
+
+  // 2. Test /send @AliceTv Un message secret
+  let sentMessages = [];
+  let adminReply = '';
+  const mockAdminCtx = {
+    from: { id: 778899, username: 'MonCreateurAdore', first_name: 'Maître' },
+    api: {
+      sendMessage: async (chatId, text, opts) => {
+        sentMessages.push({ chatId, text, opts });
+        return { message_id: 555 };
+      }
+    },
+    reply: async (text) => {
+      adminReply = text;
+    }
+  };
+
+  await PrivateAdminManager.sendDirectMessage(mockAdminCtx, "@AliceTv Bonjour Alice, voici ton accès exclusif !");
+  assert.ok(sentMessages.some(m => m.chatId === 111001 && m.text.includes('accès exclusif')), "Alice doit recevoir le message");
+  assert.ok(adminReply.includes('Message privé envoyé avec succès'), "Confirmation à l'admin");
+
+  // 3. Test /send par ID numérique
+  await PrivateAdminManager.sendDirectMessage(mockAdminCtx, "222002 Coucou Bob par ID");
+  assert.ok(sentMessages.some(m => m.chatId === 222002 && m.text.includes('Coucou Bob par ID')));
+
+  // 4. Test /send sur utilisateur inexistant
+  let notFoundReply = '';
+  const mockAdminCtxNotFound = {
+    from: { id: 778899, username: 'MonCreateurAdore' },
+    api: { sendMessage: async () => {} },
+    reply: async (text) => { notFoundReply = text; }
+  };
+  await PrivateAdminManager.sendDirectMessage(mockAdminCtxNotFound, "@InconnuAuBataillon Salut");
+  assert.ok(notFoundReply.includes('Utilisateur introuvable'));
+
+  // 5. Test Broadcast Utilisateurs (/broadcast_users) avec gestion d'erreur (bloqué)
+  let broadcastSent = [];
+  let broadcastReport = '';
+  const mockBroadcastCtx = {
+    from: { id: 778899, username: 'MonCreateurAdore' },
+    chat: { id: 778899 },
+    api: {
+      sendMessage: async (chatId, text, opts) => {
+        if (chatId === 333003) {
+          throw new Error('Forbidden: bot was blocked by the user');
+        }
+        broadcastSent.push({ chatId, text });
+        return { message_id: 666 };
+      },
+      deleteMessage: async () => true
+    },
+    reply: async (text) => {
+      broadcastReport = text;
+      return { message_id: 777 };
+    }
+  };
+
+  await PrivateAdminManager.broadcastToUsers(mockBroadcastCtx, "📢 Annonce spéciale pour tous les membres privés !");
+  assert.ok(broadcastSent.some(m => m.chatId === 111001));
+  assert.ok(broadcastSent.some(m => m.chatId === 222002));
+  assert.ok(broadcastReport.includes('RAPPORT DE DIFFUSION UTILISATEURS'));
+  assert.ok(broadcastReport.includes('Distribués avec succès'));
+
+  // L'utilisateur 333003 ayant bloqué le bot doit avoir été retiré de la liste
+  assert.equal(db.getPrivateUsers().some(u => u.userId === 333003), false, "L'utilisateur bloqueur doit être nettoyé");
+
+  // 6. Test Import & Export Shows JSON
+  const jsonExport = db.exportShowsJson();
+  assert.ok(jsonExport.includes('totalShows'));
+  assert.ok(jsonExport.includes('shows'));
+
+  const importedCount = db.importShows([
+    { name: "Koh Lanta Saison 25", link: "https://stream.tv/kl25", description: "La tribu maudite" }
+  ]);
+  assert.equal(importedCount, 1);
+  assert.ok(db.findShow("koh lanta"));
+
+  // Nettoyage
+  db.removePrivateUser(111001);
+  db.removePrivateUser(222002);
+  db.removeShow("Koh Lanta Saison 25");
+});
+
 test.after(() => {
   const files = [
     'data/test_moderation_db.json',

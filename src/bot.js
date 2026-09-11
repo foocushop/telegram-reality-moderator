@@ -67,6 +67,7 @@ async function bootstrap() {
   // /start (Distinction automatique entre MP privé admin, MP privé membre et groupe public)
   bot.command('start', async (ctx) => {
     if (ctx.chat?.type === 'private') {
+      if (ctx.from) db.savePrivateUser(ctx.from);
       if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
         return PrivateAdminManager.sendDashboard(ctx);
       }
@@ -143,6 +144,22 @@ async function bootstrap() {
     if (ctx.chat?.type === 'private') {
       const text = ctx.message.text.replace(/^\/(broadcast|annonce)\s*/i, '').trim();
       return PrivateAdminManager.broadcastToAll(ctx, text);
+    }
+  });
+
+  // /broadcast_users, /broadcast_members ou /dm_all pour diffuser à tous les utilisateurs privés du bot
+  bot.command(['broadcast_users', 'broadcast_members', 'dm_all'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const text = ctx.message.text.replace(/^\/(broadcast_users|broadcast_members|dm_all)\s*/i, '').trim();
+      return PrivateAdminManager.broadcastToUsers(ctx, text);
+    }
+  });
+
+  // /send, /dm ou /msg pour envoyer un message ciblé à un membre précis par son @username ou ID
+  bot.command(['send', 'dm', 'msg'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(send|dm|msg)\s*/i, '').trim();
+      return PrivateAdminManager.sendDirectMessage(ctx, args);
     }
   });
 
@@ -254,10 +271,17 @@ async function bootstrap() {
     return PrivateAdminManager.delShowCommand(ctx, args);
   });
 
-  // /backup ou /export pour créer une sauvegarde
-  bot.command(['backup', 'export'], async (ctx) => {
+  // /backup pour créer une sauvegarde locale
+  bot.command('backup', async (ctx) => {
     if (ctx.chat?.type === 'private') {
       return PrivateAdminManager.handleBackup(ctx);
+    }
+  });
+
+  // /export ou /exportshows pour exporter le catalogue JSON directement dans Telegram
+  bot.command(['export', 'exportshows'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.exportShowsCommand(ctx);
     }
   });
 
@@ -558,6 +582,18 @@ async function bootstrap() {
 
     // Si c'est en chat privé avec le bot
     if (ctx.chat?.type === 'private') {
+      // Enregistrer systématiquement l'utilisateur privé
+      if (ctx.from) {
+        db.savePrivateUser(ctx.from);
+      }
+
+      // Si l'administrateur envoie un document JSON pour importation de catalogue
+      if (ctx.message?.document && ctx.message.document.file_name?.toLowerCase().endsWith('.json')) {
+        if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
+          return PrivateAdminManager.handleJsonFileImport(ctx);
+        }
+      }
+
       // Détection automatique lors d'un transfert de message depuis un canal
       const forwardedChat = ctx.message.forward_from_chat;
       if (forwardedChat && forwardedChat.type === 'channel') {

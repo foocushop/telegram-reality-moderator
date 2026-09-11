@@ -58,6 +58,10 @@ export class MemberCatalogService {
    * Traite un message privé d'un membre avec mémoire multi-tours et conversation naturelle
    */
   static async handlePrivateMessage(ctx, text) {
+    if (ctx.from) {
+      db.savePrivateUser(ctx.from);
+    }
+
     const userId = ctx.from?.id || 'default_user';
     const authorName = ctx.from?.first_name || 'Ami(e)';
     const cleanText = (text || '').trim();

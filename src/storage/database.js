@@ -44,6 +44,7 @@ export class ModerationDatabase {
       managedChats: [],     // Liste des canaux et groupes gérés [{ id, title, type, username, addedAt }]
       adminIds: [],      // Liste des IDs des administrateurs du groupe
       shows: {},         // { [showId]: { id, name, link, description, aliases, addedAt } }
+      privateUsers: {},  // { [userId]: { userId, username, fullName, lastSeen } }
       stats: {
         messagesScanned: 0,
         imagesScanned: 0,
@@ -102,6 +103,7 @@ export class ModerationDatabase {
       if (!this.data.shows) this.data.shows = {};
       if (!Array.isArray(this.data.masters)) this.data.masters = [];
       if (!Array.isArray(this.data.managedChats)) this.data.managedChats = [];
+      if (!this.data.privateUsers || typeof this.data.privateUsers !== 'object') this.data.privateUsers = {};
 
       // Migration automatique : si masters est vide mais qu'un master historique existe
       if (this.data.masters.length === 0 && (this.data.masterUsername || this.data.masterId)) {
@@ -512,7 +514,51 @@ export class ModerationDatabase {
     return (this.data.knownUsers && this.data.knownUsers[userId]) ||
            (this.data.bannedUsers && this.data.bannedUsers[userId]) ||
            (this.data.mutedUsers && this.data.mutedUsers[userId]) ||
+           (this.data.privateUsers && this.data.privateUsers[userId]) ||
            null;
+  }
+
+  // --- Gestion des Utilisateurs Privés (Pour broadcast MP et messages ciblés) ---
+  savePrivateUser(user) {
+    if (!user || !user.id) return null;
+    if (!this.data.privateUsers) this.data.privateUsers = {};
+    const userId = Number(user.id);
+    const rawUsername = user.username ? String(user.username).replace(/^@/, '').trim() : '';
+    const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Utilisateur';
+
+    this.data.privateUsers[userId] = {
+      userId,
+      username: rawUsername,
+      fullName,
+      lastInteraction: new Date().toISOString()
+    };
+
+    // Mémoriser également dans knownUsers et le mapping d'identifiants
+    this.saveUser(userId, { username: rawUsername, fullName });
+    this.save();
+    return this.data.privateUsers[userId];
+  }
+
+  getPrivateUsers() {
+    if (!this.data.privateUsers) this.data.privateUsers = {};
+    return Object.values(this.data.privateUsers);
+  }
+
+  removePrivateUser(userId) {
+    if (!this.data.privateUsers || !userId) return false;
+    const strId = String(userId);
+    const numId = Number(userId);
+    let deleted = false;
+    if (this.data.privateUsers[strId]) {
+      delete this.data.privateUsers[strId];
+      deleted = true;
+    }
+    if (this.data.privateUsers[numId]) {
+      delete this.data.privateUsers[numId];
+      deleted = true;
+    }
+    if (deleted) this.save();
+    return deleted;
   }
 
   getStats() {
@@ -918,6 +964,35 @@ export class ModerationDatabase {
 
   getShowsList() {
     return Object.values(this.data.shows || {}).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  exportShowsJson() {
+    return JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      totalShows: Object.keys(this.data.shows || {}).length,
+      shows: this.data.shows || {}
+    }, null, 2);
+  }
+
+  importShows(showsInput) {
+    if (!showsInput || typeof showsInput !== 'object') return 0;
+    let list = [];
+    if (Array.isArray(showsInput)) {
+      list = showsInput;
+    } else if (showsInput.shows && typeof showsInput.shows === 'object') {
+      list = Object.values(showsInput.shows);
+    } else {
+      list = Object.values(showsInput);
+    }
+
+    let importedCount = 0;
+    for (const item of list) {
+      if (item && item.name && item.link) {
+        this.addShow(item.name, item.link, item.description || '', item.aliases || []);
+        importedCount++;
+      }
+    }
+    return importedCount;
   }
 
   findShow(query) {

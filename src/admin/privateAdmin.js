@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, InputFile } from 'grammy';
 import { config, getBotContext } from '../config.js';
 import { db } from '../storage/database.js';
 import { ActionManager } from '../moderation/actionManager.js';
@@ -196,12 +196,19 @@ export class PrivateAdminManager {
         const chats = db.getManagedChats();
         const channelsCount = db.getManagedChannels().length;
         const groupsCount = db.getManagedGroups().length;
+        const privUsersCount = db.getPrivateUsers().length;
         await ctx.reply(
-          `📢 <b>DIFFUSION D'UNE ANNONCE MULTI-CANAUX</b>\n\n` +
-          `Pour envoyer une annonce officielle et soignée dans <b>tous vos canaux et groupes connectés</b> (${chats.length} au total : ${channelsCount} canal/aux, ${groupsCount} groupe(s)), tapez :\n\n` +
-          `<code>/broadcast Votre message d'annonce ici...</code>\n\n` +
-          `<i>Le bot publiera instantanément l'annonce avec un badge officiel Télé-Réalité sur chacun d'eux !</i>\n\n` +
-          `💡 <i>Tapez <code>/channels</code> pour voir et gérer la liste de vos canaux et groupes.</i>`,
+          `📢 <b>DIFFUSIONS & MESSAGERIE DIRECTE</b>\n\n` +
+          `1️⃣ <b>Diffusion multi-canaux & groupes :</b>\n` +
+          `<code>/broadcast Votre message d'annonce ici...</code>\n` +
+          `<i>Publie sur vos canaux et groupes connectés (${chats.length} au total).</i>\n\n` +
+          `2️⃣ <b>Diffusion globale aux membres en MP :</b>\n` +
+          `<code>/broadcast_users Votre message ici...</code>\n` +
+          `<i>Envoie votre annonce en privé à tous les utilisateurs enregistrés (${privUsersCount} actuellement).</i>\n\n` +
+          `3️⃣ <b>Message ciblé à une personne précise :</b>\n` +
+          `<code>/send @pseudo Votre message ici...</code>\n` +
+          `<i>Envoie un message privé à un membre en particulier.</i>\n\n` +
+          `💡 <i>Tapez <code>/channels</code> pour voir et gérer vos canaux.</i>`,
           { parse_mode: 'HTML' }
         );
         break;
@@ -644,6 +651,69 @@ export class PrivateAdminManager {
   }
 
   /**
+   * Exporte le catalogue sous forme de fichier JSON directement dans Telegram
+   */
+  static async exportShowsCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const shows = db.getShowsList();
+    const jsonStr = db.exportShowsJson();
+    const buffer = Buffer.from(jsonStr, 'utf-8');
+
+    await ctx.replyWithDocument(
+      new InputFile(buffer, `shows_catalog_${new Date().toISOString().slice(0, 10)}.json`),
+      {
+        caption:
+          `📦 <b>SAUVEGARDE DU CATALOGUE TÉLÉ-RÉALITÉ</b>\n\n` +
+          `📺 Contient <b>${shows.length} émission(s)</b> actives.\n\n` +
+          `💡 <b>Comment restaurer en cas de redéploiement Render :</b>\n` +
+          `Renvoyez simplement ce fichier <code>.json</code> au bot ici en message privé, et toutes vos séries seront restaurées en 1 seconde !`,
+        parse_mode: 'HTML'
+      }
+    );
+  }
+
+  /**
+   * Importe un fichier de sauvegarde JSON envoyé par l'administrateur
+   */
+  static async handleJsonFileImport(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const doc = ctx.message?.document;
+    if (!doc || !doc.file_name?.toLowerCase().endsWith('.json')) {
+      return;
+    }
+
+    try {
+      const file = await ctx.getFile();
+      const fileUrl = `https://api.telegram.org/file/bot${config.telegramToken}/${file.file_path}`;
+      const res = await fetch(fileUrl);
+      const content = await res.text();
+      const parsed = JSON.parse(content);
+
+      const importedCount = db.importShows(parsed);
+      const totalShows = db.getShowsList().length;
+
+      return ctx.reply(
+        `✅ <b>IMPORTATION DU CATALOGUE RÉUSSIE !</b> 🎉\n\n` +
+        `📥 <b>${importedCount} émission(s)</b> importées ou mises à jour depuis votre fichier.\n` +
+        `📺 <b>Total actif dans le catalogue :</b> <b>${totalShows}</b> émission(s).\n\n` +
+        `Tapez <code>/shows</code> pour vérifier votre catalogue complet !`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[ADMIN] Erreur import JSON:', err);
+      return ctx.reply(`❌ <b>Erreur lors de l'importation du fichier JSON :</b> ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+    }
+  }
+
+  /**
    * Modifie ou ajoute du texte au fichier context.txt directement depuis Telegram
    */
   static async updateContext(ctx, newText, isAppend = false) {
@@ -779,6 +849,180 @@ export class PrivateAdminManager {
    */
   static async broadcastToGroup(ctx, announcementText) {
     return this.broadcastToAll(ctx, announcementText);
+  }
+
+  /**
+   * Envoie un message privé ciblé à un utilisateur précis via son @username ou ID
+   */
+  static async sendDirectMessage(ctx, fullArgs) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const cleanArgs = (fullArgs || '').trim();
+    const firstSpaceIdx = cleanArgs.indexOf(' ');
+
+    if (!cleanArgs || firstSpaceIdx === -1) {
+      return ctx.reply(
+        `✉️ <b>ENVOI D'UN MESSAGE PRIVÉ CIBLÉ</b>\n\n` +
+        `📝 <b>Utilisation :</b>\n` +
+        `<code>/send @pseudo Votre message ici...</code>\n` +
+        `ou\n` +
+        `<code>/send ID_UTILISATEUR Votre message ici...</code>\n\n` +
+        `💡 <b>Exemples :</b>\n` +
+        `• <code>/send @GrandJD Coucou ! Ton lien exclusif est prêt.</code>\n` +
+        `• <code>/send 5514712683 Bonjour, merci pour ton retour !</code>\n\n` +
+        `<i>Le bot distribuera directement votre message en privé à cette personne.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const targetArg = cleanArgs.slice(0, firstSpaceIdx).trim();
+    const messageToSend = cleanArgs.slice(firstSpaceIdx).trim();
+
+    if (!messageToSend) {
+      return ctx.reply("⚠️ Veuillez spécifier le message à envoyer après l'identifiant.", { parse_mode: 'HTML' });
+    }
+
+    let targetUserId = null;
+    let targetDetails = null;
+
+    if (/^-?\d+$/.test(targetArg)) {
+      targetUserId = Number(targetArg);
+      targetDetails = db.getUserDetails(targetUserId);
+    } else {
+      const cleanUsername = targetArg.replace(/^@/, '').toLowerCase().trim();
+      targetUserId = db.getUserIdByUsername(cleanUsername);
+      if (targetUserId) {
+        targetDetails = db.getUserDetails(targetUserId);
+      } else {
+        const privUsers = db.getPrivateUsers();
+        const found = privUsers.find(u => u.username && u.username.toLowerCase() === cleanUsername);
+        if (found) {
+          targetUserId = found.userId;
+          targetDetails = found;
+        }
+      }
+    }
+
+    if (!targetUserId) {
+      return ctx.reply(
+        `❌ <b>Utilisateur introuvable :</b> <code>${escapeHtml(targetArg)}</code>\n\n` +
+        `👉 <i>Le bot ne peut envoyer de message qu'aux membres ayant déjà au moins une fois lancé le bot en privé (/start ou message) ou actifs dans le groupe.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const targetDisplay = targetDetails?.username
+      ? `@${escapeHtml(targetDetails.username)}`
+      : (targetDetails?.fullName ? `<b>${escapeHtml(targetDetails.fullName)}</b>` : `<code>${targetUserId}</code>`);
+
+    try {
+      await ctx.api.sendMessage(targetUserId, messageToSend, { parse_mode: 'HTML' });
+    } catch (sendErr) {
+      try {
+        await ctx.api.sendMessage(targetUserId, messageToSend);
+      } catch (rawErr) {
+        return ctx.reply(
+          `❌ <b>Échec de distribution à ${targetDisplay} :</b>\n\n` +
+          `<code>${escapeHtml(rawErr.message)}</code>\n\n` +
+          `👉 <i>L'utilisateur a probablement bloqué le bot ou ne l'a jamais démarré en privé.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+
+    // Journalisation dans l'Audit (Render + Canal d'audit)
+    await AuditService.logPrivateInteraction(
+      { from: { id: targetUserId, username: targetDetails?.username, first_name: targetDetails?.fullName || 'Membre' }, api: ctx.api },
+      `[ENVOI ADMINISTRATEUR MANUEL par ${ctx.from?.first_name || 'Admin'}]`,
+      messageToSend,
+      { tag: 'ADMIN_DIRECT_SEND' }
+    );
+
+    return ctx.reply(
+      `✅ <b>Message privé envoyé avec succès !</b> 🚀\n\n` +
+      `👤 <b>Destinataire :</b> ${targetDisplay} (ID: <code>${targetUserId}</code>)\n` +
+      `💬 <b>Contenu :</b>\n<i>"${escapeHtml(messageToSend)}"</i>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  /**
+   * Diffuse un message à TOUS les utilisateurs ayant discuté avec le bot en privé
+   */
+  static async broadcastToUsers(ctx, announcementText) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const cleanText = (announcementText || '').trim();
+    if (!cleanText) {
+      const privateUsersCount = db.getPrivateUsers().length;
+      return ctx.reply(
+        `📢 <b>DIFFUSION GLOBALE AUX UTILISATEURS (MESSAGES PRIVÉS)</b>\n\n` +
+        `👥 Utilisateurs enregistrés éligibles : <b>${privateUsersCount}</b>\n\n` +
+        `📝 <b>Utilisation :</b>\n` +
+        `<code>/broadcast_users Votre annonce ici...</code>\n\n` +
+        `💡 <i>Chaque membre recevra ce message directement dans sa boîte privée avec Léna.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const privateUsers = db.getPrivateUsers();
+    if (privateUsers.length === 0) {
+      return ctx.reply(
+        "⚠️ <b>Aucun utilisateur privé enregistré pour le moment.</b>\n\n" +
+        "Dès que des membres envoient un message au bot ou cliquent sur /start, ils seront automatiquement enregistrés.",
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const statusMsg = await ctx.reply(`🚀 <b>Diffusion en cours vers ${privateUsers.length} utilisateur(s)...</b>`, { parse_mode: 'HTML' });
+
+    let successCount = 0;
+    let failCount = 0;
+    const blockedUserIds = [];
+
+    for (const u of privateUsers) {
+      try {
+        await ctx.api.sendMessage(u.userId, cleanText, { parse_mode: 'HTML' });
+        successCount++;
+      } catch (err) {
+        try {
+          await ctx.api.sendMessage(u.userId, cleanText);
+          successCount++;
+        } catch (subErr) {
+          failCount++;
+          if (subErr.message && (subErr.message.includes('blocked') || subErr.message.includes('deactivated') || subErr.message.includes('not found') || subErr.message.includes('Forbidden'))) {
+            blockedUserIds.push(u.userId);
+          }
+        }
+      }
+      // Pause de cadence anti-flood
+      await new Promise(r => setTimeout(r, 40));
+    }
+
+    // Nettoyage automatique des utilisateurs qui ont bloqué le bot
+    if (blockedUserIds.length > 0) {
+      blockedUserIds.forEach(id => db.removePrivateUser(id));
+    }
+
+    const report =
+      `📢 <b>RAPPORT DE DIFFUSION UTILISATEURS (MP)</b>\n\n` +
+      `✅ <b>Distribués avec succès :</b> <b>${successCount}</b>\n` +
+      `❌ <b>Échecs / Bloqués :</b> <b>${failCount}</b>\n` +
+      `📊 <b>Total des membres ciblés :</b> <b>${privateUsers.length}</b>\n` +
+      (blockedUserIds.length > 0 ? `🧹 <i>${blockedUserIds.length} compte(s) inactifs ou bloqueurs retirés de la liste.</i>\n\n` : '\n') +
+      `💬 <b>Message diffusé :</b>\n<i>"${escapeHtml(cleanText.slice(0, 300))}${cleanText.length > 300 ? '...' : ''}"</i>`;
+
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+    } catch {}
+
+    return ctx.reply(report, { parse_mode: 'HTML' });
   }
 
   /**
