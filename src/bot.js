@@ -715,14 +715,11 @@ async function bootstrap() {
         }
       }
 
-      // Si l'administrateur envoie une photo avec légende pour configurer une série
-      if (ctx.message?.photo && ctx.message?.caption) {
-        const caption = ctx.message.caption.trim();
-        if (/^\/(setshowphoto|showphoto|setphoto)/i.test(caption)) {
-          if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
-            const args = caption.replace(/^\/(setshowphoto|showphoto|setphoto)\s*/i, '').trim();
-            return PrivateAdminManager.setShowPhotoCommand(ctx, args);
-          }
+      // Gestion intelligente des photos envoyées par l'administrateur (pending state, légende, document image)
+      if (ctx.message?.photo || (ctx.message?.document && ctx.message.document.mime_type?.startsWith('image/'))) {
+        if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
+          const photoHandled = await PrivateAdminManager.handleIncomingPhoto(ctx);
+          if (photoHandled) return;
         }
       }
 

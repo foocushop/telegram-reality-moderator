@@ -1370,6 +1370,56 @@ test('ChannelFailoverService : Surveillance silencieuse, Pool de réserves et Fa
   db.removePrivateUser(88112233);
 });
 
+test('PrivateAdminManager : Configuration de photo par envoi direct et gestion du pending state', async () => {
+  const showName = 'Secret Story Test Photo';
+  const show = db.addShow(showName, 'https://t.me/secret', 'Maison des secrets');
+
+  const adminUserId = 778899;
+  let replyText = '';
+
+  // 1. L'admin tape la commande /setshowphoto sans photo
+  const cmdCtx = {
+    from: { id: adminUserId, username: 'MonCreateurAdore' },
+    message: { text: `/setshowphoto ${showName}` },
+    reply: async (txt) => { replyText = txt; }
+  };
+
+  await PrivateAdminManager.setShowPhotoCommand(cmdCtx, showName);
+  assert.ok(replyText.includes(`EN ATTENTE DE LA PHOTO POUR "${showName}"`));
+  assert.ok(PrivateAdminManager.pendingPhotoRequests.has(adminUserId));
+
+  // 2. L'admin envoie ensuite directement une photo sans légende
+  let photoReply = '';
+  const photoCtx = {
+    from: { id: adminUserId, username: 'MonCreateurAdore' },
+    message: {
+      photo: [
+        { file_id: 'small_thumb', width: 100, height: 100 },
+        { file_id: 'telegram_cloud_file_id_secret_story_9988', width: 800, height: 800 }
+      ]
+    },
+    api: {
+      getChat: async (id) => ({ id, title: 'Chat Storage' }),
+      sendDocument: async () => ({ message_id: 1111 }),
+      pinChatMessage: async () => true
+    },
+    reply: async (txt) => { photoReply = txt; }
+  };
+
+  const handled = await PrivateAdminManager.handleIncomingPhoto(photoCtx);
+  assert.equal(handled, true);
+  assert.ok(photoReply.includes('PHOTO ENREGISTRÉE AVEC SUCCÈS'));
+  assert.ok(photoReply.includes('telegram_cloud_file_id_secret_story_9988'));
+  assert.equal(PrivateAdminManager.pendingPhotoRequests.has(adminUserId), false, "La demande en attente doit être nettoyée");
+
+  // 3. Vérifier que la photo est bien stockée en base
+  const updatedShow = db.findShow(show.id);
+  assert.equal(updatedShow.photo, 'telegram_cloud_file_id_secret_story_9988');
+
+  // Nettoyage
+  db.removeShow(showName);
+});
+
 test.after(() => {
   const files = [
     'data/test_moderation_db.json',

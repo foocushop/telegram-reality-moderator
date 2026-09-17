@@ -13,6 +13,8 @@ import { AuditRecoveryService } from '../services/auditRecoveryService.js';
 import { ChannelFailoverService } from '../services/channelFailoverService.js';
 
 export class PrivateAdminManager {
+  static pendingPhotoRequests = new Map();
+
   /**
    * Vérifie si l'utilisateur en chat privé a les droits d'administration
    */
@@ -637,8 +639,13 @@ export class PrivateAdminManager {
     if (!show) return ctx.reply(`❌ Émission "${escapeHtml(showName)}" introuvable.`);
 
     if (!photo) {
+      this.pendingPhotoRequests.set(userId, { showId: show.id, showName: show.name, timestamp: Date.now() });
       return ctx.reply(
-        `⚠️ Veuillez joindre une photo ou spécifier un lien d'image direct HTTP(S) pour <b>${escapeHtml(show.name)}</b>.`,
+        `📸 <b>EN ATTENTE DE LA PHOTO POUR "${escapeHtml(show.name)}"</b> 🖼️\n\n` +
+        `👉 <b>Envoyez simplement votre image ici dans la conversation privée dès maintenant !</b>\n\n` +
+        `• Pas besoin de texte ou de commande, glissez juste la photo.\n` +
+        `• Le bot enregistrera son identifiant Telegram cloud permanent (<code>file_id</code>) sans encombrer le disque Render.\n` +
+        `• Vous pouvez aussi envoyer une URL web : <code>/setshowphoto ${escapeHtml(show.name)} https://...</code>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -647,11 +654,76 @@ export class PrivateAdminManager {
     CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_photo_updated');
 
     await ctx.reply(
-      `✅ <b>PHOTO PAR DÉFAUT ENREGISTRÉE !</b> 🖼️\n\n` +
+      `✅ <b>PHOTO PAR DÉFAUT ENREGISTRÉE !</b> 🖼️🎉\n\n` +
       `📺 Émission : <b>${escapeHtml(show.name)}</b>\n\n` +
       `Cette image sera automatiquement utilisée comme photo de profil pour les nouveaux canaux créés et incluse dans le message de diffusion aux membres lors du failover !`,
       { parse_mode: 'HTML' }
     );
+  }
+
+  /**
+   * Traite la réception d'une photo ou document image envoyé par un administrateur en chat privé
+   */
+  static async handleIncomingPhoto(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(ctx.from || userId)) return false;
+
+    // Récupérer le file_id de la photo ou du document image
+    let fileId = null;
+    const photos = ctx.message?.photo;
+    const doc = ctx.message?.document;
+
+    if (photos && photos.length > 0) {
+      fileId = photos[photos.length - 1].file_id;
+    } else if (doc && (doc.mime_type?.startsWith('image/') || doc.file_name?.match(/\.(png|jpe?g|webp)$/i))) {
+      fileId = doc.file_id;
+    }
+
+    if (!fileId) return false;
+
+    // 1. Vérifier si une demande de photo est en attente pour cet administrateur
+    const pending = this.pendingPhotoRequests.get(userId);
+    if (pending) {
+      const show = db.findShow(pending.showId) || db.findShow(pending.showName);
+      this.pendingPhotoRequests.delete(userId);
+
+      if (show) {
+        db.setShowPhoto(show.id, fileId);
+        CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_photo_updated');
+
+        await ctx.reply(
+          `✅ <b>PHOTO ENREGISTRÉE AVEC SUCCÈS !</b> 🖼️🎉\n\n` +
+          `📺 <b>Émission :</b> <b>${escapeHtml(show.name)}</b>\n` +
+          `🆔 <b>Telegram File ID :</b> <code>${fileId}</code>\n\n` +
+          `☁️ <i>L'image est hébergée sur les serveurs Telegram et sauvegardée dans votre Cloud. Elle servira pour la photo de profil des nouveaux canaux et le message avec lien (👉) envoyé à tous les abonnés !</i>`,
+          { parse_mode: 'HTML' }
+        );
+        return true;
+      }
+    }
+
+    // 2. Vérifier si la photo comporte une légende (/setshowphoto [série] ou juste le nom d'une série)
+    const caption = (ctx.message?.caption || '').trim();
+    if (caption) {
+      const cleanArgs = caption.replace(/^\/(setshowphoto|showphoto|setphoto)\s*/i, '').trim();
+      if (cleanArgs) {
+        const matchedShow = db.findShow(cleanArgs);
+        if (matchedShow) {
+          db.setShowPhoto(matchedShow.id, fileId);
+          CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_photo_updated');
+          await ctx.reply(
+            `✅ <b>PHOTO ENREGISTRÉE AVEC SUCCÈS !</b> 🖼️🎉\n\n` +
+            `📺 <b>Émission :</b> <b>${escapeHtml(matchedShow.name)}</b>\n` +
+            `🆔 <b>Telegram File ID :</b> <code>${fileId}</code>\n\n` +
+            `☁️ <i>L'image a été liée à cette série avec succès !</i>`,
+            { parse_mode: 'HTML' }
+          );
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
