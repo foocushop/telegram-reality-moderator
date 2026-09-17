@@ -1005,16 +1005,18 @@ export class ModerationDatabase {
       customAliases.forEach(a => a && autoAliases.add(a.toLowerCase().trim()));
     }
 
+    const existing = this.data.shows ? this.data.shows[id] : null;
+
     const show = {
       id,
       name: cleanName,
       link: link.trim(),
       description: description.trim(),
       aliases: Array.from(autoAliases),
-      channelId: null,
-      photo: null,
-      standbyChannels: [],
-      addedAt: new Date().toISOString()
+      channelId: existing?.channelId || null,
+      photo: existing?.photo || null,
+      standbyChannels: Array.isArray(existing?.standbyChannels) ? existing.standbyChannels : [],
+      addedAt: existing?.addedAt || new Date().toISOString()
     };
 
     if (!this.data.shows) this.data.shows = {};
@@ -1151,7 +1153,17 @@ export class ModerationDatabase {
     let importedCount = 0;
     for (const item of list) {
       if (item && item.name && item.link) {
-        this.addShow(item.name, item.link, item.description || '', item.aliases || []);
+        const added = this.addShow(item.name, item.link, item.description || '', item.aliases || []);
+        if (item.channelId && !added.channelId) added.channelId = item.channelId;
+        if (item.photo && !added.photo) added.photo = item.photo;
+        if (Array.isArray(item.standbyChannels) && item.standbyChannels.length > 0) {
+          if (!Array.isArray(added.standbyChannels)) added.standbyChannels = [];
+          for (const sId of item.standbyChannels) {
+            if (!added.standbyChannels.includes(sId)) {
+              added.standbyChannels.push(sId);
+            }
+          }
+        }
         importedCount++;
       }
     }

@@ -1098,7 +1098,10 @@ test('CloudSyncService : Sauvegarde d\'état persistante et Auto-Hydration Cloud
   };
 
   // 3. Test Sauvegarde Cloud
-  db.addShow("Pékin Express All Stars", "https://stream.tv/pekin", "Saison Légendes");
+  const pekinShow = db.addShow("Pékin Express All Stars", "https://stream.tv/pekin", "Saison Légendes");
+  db.setShowChannel(pekinShow.id, "-100111999888");
+  db.setShowPhoto(pekinShow.id, "FILE_ID_PEKIN_PHOTO");
+  db.addStandbyChannel(pekinShow.id, "-100777666555");
   db.savePrivateUser({ id: 998877, username: 'CloudMember', first_name: 'Cloud' });
 
   const saveRes = await CloudSyncService.saveToCloud(mockApi, 'test_run');
@@ -1129,7 +1132,11 @@ test('CloudSyncService : Sauvegarde d\'état persistante et Auto-Hydration Cloud
   // Exécuter l'Auto-Hydration
   const hydrateRes = await CloudSyncService.hydrateFromCloud(mockApi);
   assert.equal(hydrateRes.success, true);
-  assert.ok(db.findShow("pekin express"), "La série doit être restaurée depuis le Cloud");
+  const restoredPekin = db.findShow("pekin express");
+  assert.ok(restoredPekin, "La série doit être restaurée depuis le Cloud");
+  assert.equal(restoredPekin.channelId, "-100111999888", "Le canal principal de la série doit être restauré");
+  assert.equal(restoredPekin.photo, "FILE_ID_PEKIN_PHOTO", "Le file_id de la photo doit être restauré");
+  assert.deepEqual(restoredPekin.standbyChannels, ["-100777666555"], "Les canaux de réserve doivent être restaurés");
   assert.equal(db.getPrivateUsers().some(u => u.userId === 998877), true, "Le membre privé doit être restauré depuis le Cloud");
 
   // 5. Test des commandes d'administration Cloud
