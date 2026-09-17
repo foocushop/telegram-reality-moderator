@@ -14,6 +14,7 @@ import { geminiService } from '../src/ai/gemini.js';
 import { PrivateAdminManager } from '../src/admin/privateAdmin.js';
 import { CloudSyncService } from '../src/services/cloudSyncService.js';
 import { AuditRecoveryService } from '../src/services/auditRecoveryService.js';
+import { ChannelFailoverService } from '../src/services/channelFailoverService.js';
 
 test('Normalisation de texte anti-contournement', () => {
   assert.equal(normalizeText('Puuuutain !'), 'puutain !');
@@ -1255,6 +1256,118 @@ test('AuditRecoveryService : Extraction, Réinjection et Cloud Sync des utilisat
   db.removePrivateUser(77881122);
   db.removePrivateUser(44556677);
   db.removePrivateUser(123987);
+});
+
+test('ChannelFailoverService : Surveillance silencieuse, Pool de réserves et Failover automatique avec broadcast', async () => {
+  // 1. Test du Health Check silencieux (sans aucun message envoyé)
+  const mockHealthyApi = {
+    getChat: async (chatId) => {
+      if (chatId === '-100111222333') {
+        return { id: -100111222333, title: 'Les Apprentis Aventuriers Officiel', type: 'channel' };
+      }
+      throw new Error('400: Bad Request: chat not found');
+    }
+  };
+
+  const healthyCheck = await ChannelFailoverService.checkChannelHealth(mockHealthyApi, '-100111222333');
+  assert.equal(healthyCheck.alive, true);
+  assert.equal(healthyCheck.chat.title, 'Les Apprentis Aventuriers Officiel');
+
+  const deadCheck = await ChannelFailoverService.checkChannelHealth(mockHealthyApi, '-100999888777');
+  assert.equal(deadCheck.alive, false);
+  assert.equal(deadCheck.error, 'chat_not_found');
+
+  // 2. Configuration d'une émission avec canal principal et réserves dans la base
+  const showName = 'Les Apprentis Aventuriers Test';
+  const show = db.addShow(showName, 'https://t.me/old_link', 'Saison spéciale');
+  db.setShowChannel(show.id, '-100999888777');
+  db.setShowPhoto(show.id, 'https://images.tv/apprentis.jpg');
+  db.addStandbyChannel(show.id, '-100222333444');
+  db.addStandbyChannel(show.id, '-100555666777');
+
+  assert.equal(show.standbyChannels.length, 2);
+  assert.equal(show.photo, 'https://images.tv/apprentis.jpg');
+
+  // 3. Enregistrement d'un utilisateur de test pour le broadcast
+  db.savePrivateUser({ id: 88112233, username: 'FanAventurier', first_name: 'Lucas' });
+
+  // 4. Mock complet de l'API Telegram pour le Failover
+  let titleUpdated = null;
+  let descriptionUpdated = null;
+  let photoSet = null;
+  let inviteCreated = false;
+  let sentPhotos = [];
+  let sentMessages = [];
+  let pinnedDoc = null;
+
+  const mockFailoverApi = {
+    getChat: async (id) => {
+      if (id === '-100999888777') throw new Error('400: Bad Request: chat not found');
+      return { id, title: 'Canal de Secours Vierge', type: 'channel' };
+    },
+    setChatTitle: async (chatId, title) => {
+      titleUpdated = { chatId, title };
+      return true;
+    },
+    setChatDescription: async (chatId, desc) => {
+      descriptionUpdated = { chatId, desc };
+      return true;
+    },
+    setChatPhoto: async (chatId, photo) => {
+      photoSet = { chatId, photo };
+      return true;
+    },
+    createChatInviteLink: async (chatId, opts) => {
+      inviteCreated = true;
+      return { invite_link: 'https://t.me/+NouveauLienAventuriers' };
+    },
+    sendPhoto: async (chatId, photo, opts) => {
+      sentPhotos.push({ chatId, photo, opts });
+      return { message_id: 1001 };
+    },
+    sendMessage: async (chatId, text, opts) => {
+      sentMessages.push({ chatId, text, opts });
+      return { message_id: 1002 };
+    },
+    sendDocument: async (chatId, doc, opts) => {
+      return { message_id: 9991 };
+    },
+    pinChatMessage: async (chatId, msgId) => {
+      pinnedDoc = msgId;
+      return true;
+    }
+  };
+
+  db.setStorageChatId('-100888777666');
+
+  // 5. Exécution du Failover automatique
+  const failoverRes = await ChannelFailoverService.executeFailover(mockFailoverApi, show.id, 'ban_detected');
+  assert.equal(failoverRes.success, true);
+  assert.equal(failoverRes.standbyChannelId, '-100222333444');
+  assert.equal(failoverRes.newLink, 'https://t.me/+NouveauLienAventuriers');
+  assert.equal(titleUpdated.title, showName);
+  assert.equal(photoSet.photo, 'https://images.tv/apprentis.jpg');
+
+  // Vérifier la mise à jour du catalogue de séries dans la base
+  const updatedShow = db.findShow(show.id);
+  assert.equal(updatedShow.link, 'https://t.me/+NouveauLienAventuriers');
+  assert.equal(updatedShow.channelId, '-100222333444');
+  assert.equal(updatedShow.standbyChannels.length, 1); // La 2ème réserve reste prête
+
+  // Vérifier la diffusion (Broadcast) avec photo aux utilisateurs
+  assert.ok(sentPhotos.length > 0, "Une photo doit avoir été envoyée aux abonnés");
+  const userPhotoMsg = sentPhotos.find(p => p.chatId === 88112233);
+  assert.ok(userPhotoMsg, "Le membre Lucas doit avoir reçu la photo");
+  assert.ok(userPhotoMsg.opts.caption.includes('Nouveaux canaux créés pour Les Apprentis Aventuriers Test'));
+  assert.ok(userPhotoMsg.opts.caption.includes('https://t.me/+NouveauLienAventuriers'));
+
+  // 6. Test du watchdog checkAllMonitoredShows sur canal vivant
+  const checkRes = await ChannelFailoverService.checkAllMonitoredShows(mockFailoverApi);
+  assert.ok(checkRes.checkedCount > 0);
+
+  // Nettoyage
+  db.removeShow(showName);
+  db.removePrivateUser(88112233);
 });
 
 test.after(() => {

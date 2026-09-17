@@ -1011,6 +1011,9 @@ export class ModerationDatabase {
       link: link.trim(),
       description: description.trim(),
       aliases: Array.from(autoAliases),
+      channelId: null,
+      photo: null,
+      standbyChannels: [],
       addedAt: new Date().toISOString()
     };
 
@@ -1022,6 +1025,84 @@ export class ModerationDatabase {
       this.createBackup(`Ajout de l'émission "${cleanName}"`);
     }
     return show;
+  }
+
+  setShowChannel(nameOrId, channelId, link = null) {
+    if (!nameOrId) return null;
+    const show = this.findShow(nameOrId);
+    if (!show) return null;
+    show.channelId = channelId ? String(channelId).trim() : null;
+    if (link) show.link = String(link).trim();
+    show.updatedAt = new Date().toISOString();
+    this.save();
+    this.saveShowsCatalog();
+    return show;
+  }
+
+  setShowPhoto(nameOrId, photo) {
+    if (!nameOrId) return null;
+    const show = this.findShow(nameOrId);
+    if (!show) return null;
+    show.photo = photo ? String(photo).trim() : null;
+    show.updatedAt = new Date().toISOString();
+    this.save();
+    this.saveShowsCatalog();
+    return show;
+  }
+
+  addStandbyChannel(nameOrId, channelId) {
+    if (!nameOrId || !channelId) return null;
+    const show = this.findShow(nameOrId);
+    if (!show) return null;
+    if (!Array.isArray(show.standbyChannels)) {
+      show.standbyChannels = [];
+    }
+    const cleanId = String(channelId).trim();
+    if (!show.standbyChannels.includes(cleanId)) {
+      show.standbyChannels.push(cleanId);
+      show.updatedAt = new Date().toISOString();
+      this.save();
+      this.saveShowsCatalog();
+    }
+    return show;
+  }
+
+  removeStandbyChannel(nameOrId, channelId) {
+    if (!nameOrId || !channelId) return null;
+    const show = this.findShow(nameOrId);
+    if (!show || !Array.isArray(show.standbyChannels)) return null;
+    const cleanId = String(channelId).trim();
+    show.standbyChannels = show.standbyChannels.filter(id => id !== cleanId);
+    show.updatedAt = new Date().toISOString();
+    this.save();
+    this.saveShowsCatalog();
+    return show;
+  }
+
+  popNextStandbyChannel(nameOrId) {
+    if (!nameOrId) return null;
+    const show = this.findShow(nameOrId);
+    if (!show || !Array.isArray(show.standbyChannels) || show.standbyChannels.length === 0) return null;
+    const nextId = show.standbyChannels.shift();
+    show.updatedAt = new Date().toISOString();
+    this.save();
+    this.saveShowsCatalog();
+    return nextId;
+  }
+
+  updateShowLink(nameOrId, newLink) {
+    if (!nameOrId || !newLink) return null;
+    const show = this.findShow(nameOrId);
+    if (!show) return null;
+    show.link = String(newLink).trim();
+    show.updatedAt = new Date().toISOString();
+    this.save();
+    this.saveShowsCatalog();
+    return show;
+  }
+
+  getShowsWithMonitoring() {
+    return Object.values(this.data.shows || {}).filter(s => s.channelId || (Array.isArray(s.standbyChannels) && s.standbyChannels.length > 0));
   }
 
   removeShow(nameOrId) {

@@ -10,6 +10,7 @@ import { conversationSessions } from '../ai/conversationSession.js';
 import { AuditService } from '../services/auditService.js';
 import { CloudSyncService } from '../services/cloudSyncService.js';
 import { AuditRecoveryService } from '../services/auditRecoveryService.js';
+import { ChannelFailoverService } from '../services/channelFailoverService.js';
 
 export class PrivateAdminManager {
   /**
@@ -37,12 +38,13 @@ export class PrivateAdminManager {
       .text("📊 Statistiques", "p_stats")
       .text("📝 Contexte / Consignes", "p_context").row()
       .text("📺 Séries & Liens", "p_shows")
-      .text("💾 Sauvegardes & Cloud", "p_backup").row()
-      .text("📥 Récupérer Membres Audit", "p_recover_audit")
-      .text("📢 Faire une Annonce", "p_broadcast_info").row()
-      .text(`📡 Canaux & Groupes (${chatsCount})`, "p_channels")
-      .text("🛡️ Sécurité & Filtres", "p_security").row()
-      .text("👑 Gérer les Maîtres", "p_masters")
+      .text("🛡️ Canaux de Secours", "p_failover_menu").row()
+      .text("💾 Sauvegardes & Cloud", "p_backup")
+      .text("📥 Récupérer Membres Audit", "p_recover_audit").row()
+      .text("📢 Faire une Annonce", "p_broadcast_info")
+      .text(`📡 Canaux & Groupes (${chatsCount})`, "p_channels").row()
+      .text("🛡️ Sécurité & Filtres", "p_security")
+      .text("👑 Gérer les Maîtres", "p_masters").row()
       .text("🔄 Recharger", "p_reload");
   }
 
@@ -268,6 +270,16 @@ export class PrivateAdminManager {
         break;
       }
 
+      case 'p_failover_menu': {
+        await this.showFailoverMenu(ctx, true);
+        break;
+      }
+
+      case 'p_check_channels': {
+        await this.checkChannelsCommand(ctx);
+        break;
+      }
+
       case 'p_backup': {
         await this.handleBackup(ctx);
         break;
@@ -405,18 +417,307 @@ export class PrivateAdminManager {
 
     let msg = `📺 <b>CATALOGUE ADMINISTRATEUR (${shows.length} émissions) :</b>\n\n`;
     shows.forEach((s, idx) => {
+      const standbyCount = Array.isArray(s.standbyChannels) ? s.standbyChannels.length : 0;
       msg += `${idx + 1}. <b>${escapeHtml(s.name)}</b>\n`;
       msg += `   🔗 <code>${escapeHtml(s.link)}</code>\n`;
       if (s.description) msg += `   📋 <i>${escapeHtml(s.description)}</i>\n`;
+      msg += `   📡 Canal lié : <code>${s.channelId || 'Non lié'}</code>\n`;
+      msg += `   🛡️ Réserve secours : <b>${standbyCount}</b> canal/aux\n`;
+      msg += `   🖼️ Photo par défaut : ${s.photo ? '✅ Configurée' : '❌ Aucune'}\n`;
       msg += `   🆔 ID : <code>${escapeHtml(s.id)}</code>\n\n`;
     });
 
-    msg += `💡 <b>Actions rapides :</b>\n`;
-    msg += `• Ajouter : <code>/addshow Nom | Lien | Description</code>\n`;
-    msg += `• Supprimer : <code>/delshow Nom ou ID</code>\n`;
-    msg += `• Sauvegarder : <code>/backup</code>`;
+    msg += `💡 <b>Gestion des canaux de secours (Failover) :</b>\n`;
+    msg += `• Lier le canal principal : <code>/setshowchannel Série | ID_Canal</code>\n`;
+    msg += `• Ajouter une réserve : <code>/addstandby Série | ID_Canal</code>\n`;
+    msg += `• Définir la photo : <code>/setshowphoto Série [URL ou photo]</code>\n`;
+    msg += `• Tester la santé : <code>/checkchannels</code>\n`;
+    msg += `• Forcer bascule : <code>/failover Série</code>`;
 
     await ctx.reply(msg, { parse_mode: 'HTML' });
+  }
+
+  /**
+   * Menu interactif des canaux de secours et failover
+   */
+  static async showFailoverMenu(ctx, isEdit = false) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) {
+      return ctx.reply("⛔ Accès réservé aux administrateurs.");
+    }
+
+    const monitored = db.getShowsWithMonitoring();
+    let text =
+      `🛡️ <b>GESTION DES CANAUX DE SECOURS & FAILOVER</b> 🌴✨\n\n` +
+      `Le bot surveille silencieusement vos canaux sans jamais y poster. Si un canal saute (ban/suppression), il bascule automatiquement sur un canal de réserve, le renomme, applique la photo, génère le lien et prévient tous les membres en MP !\n\n` +
+      `📋 <b>Émissions sous surveillance (${monitored.length}) :</b>\n\n`;
+
+    if (monitored.length === 0) {
+      text += `<i>Aucune émission n'a encore de canal ou de réserve configuré.</i>\n\n`;
+    } else {
+      monitored.forEach((s, idx) => {
+        const standbyCount = Array.isArray(s.standbyChannels) ? s.standbyChannels.length : 0;
+        text += `${idx + 1}. <b>${escapeHtml(s.name)}</b>\n`;
+        text += `   • Canal actif : <code>${s.channelId || 'Non configuré'}</code>\n`;
+        text += `   • Réserves disponibles : <b>${standbyCount}</b>\n`;
+        text += `   • Photo : ${s.photo ? '✅ Oui' : '❌ Non'}\n\n`;
+      });
+    }
+
+    text +=
+      `🛠️ <b>Commandes de configuration :</b>\n` +
+      `• <code>/setshowchannel [Série] | [ID Canal]</code> : Définir le canal principal\n` +
+      `• <code>/addstandby [Série] | [ID Canal]</code> : Ajouter un canal de réserve\n` +
+      `• <code>/delstandby [Série] | [ID Canal]</code> : Retirer un canal de réserve\n` +
+      `• <code>/setshowphoto [Série]</code> : Configurer l'affiche par défaut\n` +
+      `• <code>/checkchannels</code> : Vérifier furtivement tous les canaux\n` +
+      `• <code>/failover [Série]</code> : Déclencher manuellement le secours`;
+
+    const keyboard = new InlineKeyboard()
+      .text("🔍 Scanner l'état des canaux", "p_check_channels").row()
+      .text("🔙 Retour au Panneau", "p_main_menu");
+
+    if (isEdit && ctx.callbackQuery) {
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard });
+        return;
+      } catch (e) {}
+    }
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
+  }
+
+  /**
+   * Associe le canal principal à une émission
+   */
+  static async setShowChannelCommand(ctx, fullArgs) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) return ctx.reply("⛔ Accès réservé aux administrateurs.");
+
+    if (!fullArgs || !fullArgs.includes('|')) {
+      return ctx.reply(
+        `⚠️ <b>Format requis :</b>\n<code>/setshowchannel Nom de la série | ID_du_canal</code>\n\nExemple : <code>/setshowchannel Les Apprentis Aventuriers | -100123456789</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const [showName, channelId] = fullArgs.split('|').map(s => s.trim());
+    const show = db.findShow(showName);
+    if (!show) {
+      return ctx.reply(`❌ Aucune émission trouvée pour "${escapeHtml(showName)}". Tapez /shows pour vérifier le nom.`);
+    }
+
+    // Vérification silencieuse de l'accessibilité du canal
+    const health = await ChannelFailoverService.checkChannelHealth(ctx.api, channelId);
+    if (!health.alive) {
+      return ctx.reply(
+        `⚠️ <b>Attention : Le canal spécifié semble inaccessible :</b>\n<code>${escapeHtml(health.details || health.error)}</code>\n\nAssurez-vous que le bot est bien administrateur du canal !`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    db.setShowChannel(show.id, channelId);
+    CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_channel_linked');
+
+    await ctx.reply(
+      `✅ <b>CANAL PRINCIPAL ASSOCIÉ AVEC SUCCÈS !</b>\n\n` +
+      `📺 Émission : <b>${escapeHtml(show.name)}</b>\n` +
+      `📡 Canal actif : <code>${channelId}</code> (${escapeHtml(health.chat?.title || 'OK')})\n\n` +
+      `🛡️ <i>Ce canal est désormais surveillé en continu par le système anti-ban.</i>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  /**
+   * Ajoute un canal de réserve dans le pool d'une émission
+   */
+  static async addStandbyCommand(ctx, fullArgs) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) return ctx.reply("⛔ Accès réservé aux administrateurs.");
+
+    if (!fullArgs || !fullArgs.includes('|')) {
+      return ctx.reply(
+        `⚠️ <b>Format requis :</b>\n<code>/addstandby Nom de la série | ID_du_canal_de_secours</code>\n\nExemple : <code>/addstandby Les Apprentis Aventuriers | -100987654321</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const [showName, channelId] = fullArgs.split('|').map(s => s.trim());
+    const show = db.findShow(showName);
+    if (!show) {
+      return ctx.reply(`❌ Émission "${escapeHtml(showName)}" introuvable. Tapez /shows.`);
+    }
+
+    // Contrôle furtif que le bot est administrateur dans ce canal de secours
+    const health = await ChannelFailoverService.checkChannelHealth(ctx.api, channelId);
+    if (!health.alive) {
+      return ctx.reply(
+        `⚠️ <b>Impossible de valider ce canal de réserve :</b>\n<code>${escapeHtml(health.details || health.error)}</code>\n\nVérifiez que le bot est bien administrateur dans ce canal !`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const updated = db.addStandbyChannel(show.id, channelId);
+    CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'standby_added');
+
+    await ctx.reply(
+      `🛡️ <b>CANAL DE RÉSERVE AJOUTÉ AU POOL !</b> 📦\n\n` +
+      `📺 Émission : <b>${escapeHtml(show.name)}</b>\n` +
+      `➕ Réserve ajoutée : <code>${channelId}</code> (${escapeHtml(health.chat?.title || 'OK')})\n` +
+      `📊 Total réserves prêtes : <b>${(updated.standbyChannels || []).length}</b> canal/aux\n\n` +
+      `💡 <i>Si le canal principal saute, le bot basculera automatiquement sur cette réserve en la renommant et en mettant à jour le lien.</i>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  /**
+   * Retire un canal de réserve d'une émission
+   */
+  static async delStandbyCommand(ctx, fullArgs) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) return ctx.reply("⛔ Accès réservé aux administrateurs.");
+
+    if (!fullArgs || !fullArgs.includes('|')) {
+      return ctx.reply(
+        `⚠️ Usage : <code>/delstandby Nom de la série | ID_du_canal</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const [showName, channelId] = fullArgs.split('|').map(s => s.trim());
+    const show = db.findShow(showName);
+    if (!show) return ctx.reply(`❌ Émission "${escapeHtml(showName)}" introuvable.`);
+
+    const updated = db.removeStandbyChannel(show.id, channelId);
+    CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'standby_removed');
+
+    await ctx.reply(
+      `🗑️ Canal de réserve <code>${channelId}</code> retiré de <b>${escapeHtml(show.name)}</b>.\n` +
+      `📊 Réserves restantes : <b>${(updated.standbyChannels || []).length}</b>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  /**
+   * Définit l'affiche/photo par défaut d'une émission
+   */
+  static async setShowPhotoCommand(ctx, fullArgs) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) return ctx.reply("⛔ Accès réservé aux administrateurs.");
+
+    let showName = '';
+    let photo = null;
+
+    // Si envoyé en légende d'une photo ou réponse à une photo
+    const replyPhoto = ctx.message?.reply_to_message?.photo;
+    const msgPhoto = ctx.message?.photo;
+    const targetPhoto = msgPhoto || replyPhoto;
+
+    if (targetPhoto && targetPhoto.length > 0) {
+      photo = targetPhoto[targetPhoto.length - 1].file_id;
+      showName = (fullArgs || '').trim();
+    } else if (fullArgs && fullArgs.includes('http')) {
+      const parts = fullArgs.split(/\s+/);
+      photo = parts.find(p => p.startsWith('http'));
+      showName = parts.filter(p => !p.startsWith('http')).join(' ').trim();
+    } else {
+      showName = (fullArgs || '').trim();
+    }
+
+    if (!showName) {
+      return ctx.reply(
+        `🖼️ <b>Configurer la photo par défaut d'une série :</b>\n\n` +
+        `1️⃣ <b>Méthode 1 :</b> Envoyez une image au bot en mettant comme légende :\n<code>/setshowphoto Nom de la série</code>\n\n` +
+        `2️⃣ <b>Méthode 2 :</b> Répondez à une image avec <code>/setshowphoto Nom de la série</code>\n\n` +
+        `3️⃣ <b>Méthode 3 :</b> Avec une URL web directe :\n<code>/setshowphoto Nom de la série https://mon-image.jpg</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const show = db.findShow(showName);
+    if (!show) return ctx.reply(`❌ Émission "${escapeHtml(showName)}" introuvable.`);
+
+    if (!photo) {
+      return ctx.reply(
+        `⚠️ Veuillez joindre une photo ou spécifier un lien d'image direct HTTP(S) pour <b>${escapeHtml(show.name)}</b>.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    db.setShowPhoto(show.id, photo);
+    CloudSyncService.triggerDebouncedSave(ctx.api, 1500, 'show_photo_updated');
+
+    await ctx.reply(
+      `✅ <b>PHOTO PAR DÉFAUT ENREGISTRÉE !</b> 🖼️\n\n` +
+      `📺 Émission : <b>${escapeHtml(show.name)}</b>\n\n` +
+      `Cette image sera automatiquement utilisée comme photo de profil pour les nouveaux canaux créés et incluse dans le message de diffusion aux membres lors du failover !`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  /**
+   * Vérifie furtivement la santé de tous les canaux surveillés
+   */
+  static async checkChannelsCommand(ctx) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) return ctx.reply("⛔ Accès réservé aux administrateurs.");
+
+    const progressMsg = await ctx.reply("🔍 <i>Contrôle furtif et silencieux des canaux en cours...</i>", { parse_mode: 'HTML' });
+    const report = await ChannelFailoverService.checkAllMonitoredShows(ctx.api);
+
+    let text =
+      `🛡️ <b>RAPPORT DE SANTÉ SILENCIEUX DES CANAUX</b> 🔍\n\n` +
+      `• <b>Canaux inspectés :</b> <b>${report.checkedCount}</b>\n` +
+      `• <b>Canaux inaccessibles / morts :</b> <b>${report.deadCount}</b>\n` +
+      `• <b>Basculements automatiques effectués :</b> <b>${report.failovers.length}</b>\n\n`;
+
+    if (report.checkedCount === 0) {
+      text += `💡 <i>Aucun canal principal n'est encore lié à une émission. Utilisez <code>/setshowchannel Nom | ID_Canal</code> pour démarrer la surveillance.</i>`;
+    } else if (report.deadCount === 0) {
+      text += `✅ <b>Tous vos canaux surveillés sont parfaitement en ligne et accessibles !</b>`;
+    } else {
+      text += `⚠️ <b>Détails des interventions :</b>\n`;
+      report.failovers.forEach((f, idx) => {
+        text += `${idx + 1}. <b>${escapeHtml(f.showName)}</b> : Basculé vers <code>${f.failoverResult.standbyChannelId}</code> (Nouveau lien : ${f.failoverResult.newLink})\n`;
+      });
+    }
+
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, progressMsg.message_id, text, { parse_mode: 'HTML' });
+    } catch (e) {
+      await ctx.reply(text, { parse_mode: 'HTML' });
+    }
+  }
+
+  /**
+   * Déclenche manuellement un failover immédiat sur une émission
+   */
+  static async triggerFailoverCommand(ctx, showName) {
+    const userId = ctx.from?.id;
+    if (!this.isAuthorized(userId)) return ctx.reply("⛔ Accès réservé aux administrateurs.");
+
+    const cleanName = (showName || '').trim();
+    if (!cleanName) {
+      return ctx.reply("⚠️ Veuillez spécifier le nom de l'émission à basculer : <code>/failover Les Apprentis Aventuriers</code>", { parse_mode: 'HTML' });
+    }
+
+    const show = db.findShow(cleanName);
+    if (!show) return ctx.reply(`❌ Émission "${escapeHtml(cleanName)}" introuvable.`);
+
+    const waitMsg = await ctx.reply(`⏳ <i>Bascule immédiate vers la réserve de "${escapeHtml(show.name)}" en cours...</i>`, { parse_mode: 'HTML' });
+    const res = await ChannelFailoverService.executeFailover(ctx.api, show.id, 'admin_manual');
+
+    if (res.success) {
+      await ctx.reply(
+        `🎉 <b>FAILOVER RÉUSSI AVEC SUCCÈS !</b>\n\n` +
+        `• Nouveau canal activé : <code>${res.standbyChannelId}</code>\n` +
+        `• Nouveau lien d'invitation : <code>${res.newLink}</code>\n` +
+        `• Membres notifiés par message : <b>${res.notifiedCount}</b>\n` +
+        `• Canaux de réserve restants : <b>${res.remainingStandby}</b>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply(`❌ <b>Échec du failover :</b> ${escapeHtml(res.reason)}`, { parse_mode: 'HTML' });
+    }
   }
 
   /**

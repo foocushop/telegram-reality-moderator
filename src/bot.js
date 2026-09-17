@@ -11,6 +11,7 @@ import { PrivateAdminManager } from './admin/privateAdmin.js';
 import { MemberCatalogService } from './services/memberCatalogService.js';
 import { CloudSyncService } from './services/cloudSyncService.js';
 import { AuditRecoveryService } from './services/auditRecoveryService.js';
+import { ChannelFailoverService } from './services/channelFailoverService.js';
 
 async function bootstrap() {
   console.log('====================================================');
@@ -343,6 +344,53 @@ async function bootstrap() {
     return PrivateAdminManager.delShowCommand(ctx, args);
   });
 
+  // /setshowchannel pour lier le canal principal à surveiller
+  bot.command(['setshowchannel', 'set_channel', 'linkchannel'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(setshowchannel|set_channel|linkchannel)\s*/i, '').trim();
+      return PrivateAdminManager.setShowChannelCommand(ctx, args);
+    }
+  });
+
+  // /addstandby pour ajouter un canal de réserve au pool
+  bot.command(['addstandby', 'standby', 'add_standby', 'addreserve'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(addstandby|standby|add_standby|addreserve)\s*/i, '').trim();
+      return PrivateAdminManager.addStandbyCommand(ctx, args);
+    }
+  });
+
+  // /delstandby pour retirer un canal de réserve
+  bot.command(['delstandby', 'del_standby', 'delreserve'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(delstandby|del_standby|delreserve)\s*/i, '').trim();
+      return PrivateAdminManager.delStandbyCommand(ctx, args);
+    }
+  });
+
+  // /setshowphoto pour configurer la photo par défaut de l'émission
+  bot.command(['setshowphoto', 'showphoto', 'setphoto'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(setshowphoto|showphoto|setphoto)\s*/i, '').trim();
+      return PrivateAdminManager.setShowPhotoCommand(ctx, args);
+    }
+  });
+
+  // /checkchannels pour scanner furtivement la santé de tous les canaux
+  bot.command(['checkchannels', 'testchannels', 'verifychannels'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      return PrivateAdminManager.checkChannelsCommand(ctx);
+    }
+  });
+
+  // /failover pour déclencher manuellement la bascule immédiate sur une émission
+  bot.command(['failover', 'switchchannel'], async (ctx) => {
+    if (ctx.chat?.type === 'private') {
+      const args = ctx.message.text.replace(/^\/(failover|switchchannel)\s*/i, '').trim();
+      return PrivateAdminManager.triggerFailoverCommand(ctx, args);
+    }
+  });
+
   // /backup pour créer une sauvegarde locale
   bot.command('backup', async (ctx) => {
     if (ctx.chat?.type === 'private') {
@@ -667,6 +715,17 @@ async function bootstrap() {
         }
       }
 
+      // Si l'administrateur envoie une photo avec légende pour configurer une série
+      if (ctx.message?.photo && ctx.message?.caption) {
+        const caption = ctx.message.caption.trim();
+        if (/^\/(setshowphoto|showphoto|setphoto)/i.test(caption)) {
+          if (PrivateAdminManager.isAuthorized(ctx.from || ctx.from?.id)) {
+            const args = caption.replace(/^\/(setshowphoto|showphoto|setphoto)\s*/i, '').trim();
+            return PrivateAdminManager.setShowPhotoCommand(ctx, args);
+          }
+        }
+      }
+
       // Détection automatique lors d'un transfert de message depuis un canal
       const forwardedChat = ctx.message.forward_from_chat;
       if (forwardedChat && forwardedChat.type === 'channel') {
@@ -785,6 +844,16 @@ async function bootstrap() {
     // 2. Puis toutes les 9 minutes en continu
     setInterval(sendPing, 9 * 60 * 1000);
   }
+
+  // Surveillance silencieuse et furtive des canaux (Watchdog toutes les 15 minutes)
+  const WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      await ChannelFailoverService.checkAllMonitoredShows(bot.api);
+    } catch (err) {
+      console.error('[WATCHDOG] ⚠️ Erreur lors de la vérification silencieuse des canaux :', err.message);
+    }
+  }, WATCHDOG_INTERVAL_MS);
 
   // Démarrage du bot avec écoute continue (long-polling) et support explicite des canaux
   console.log('✅ Le bot écoute activement les messages Telegram...');
